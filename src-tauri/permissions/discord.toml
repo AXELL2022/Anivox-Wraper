@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-set-discord-rpc"
+description = "Allows the frontend to update Discord Rich Presence"
+commands.allow = ["set_discord_rpc"]
