@@ -46,7 +46,101 @@ pub fn run() {
         .manage(DiscordState(Mutex::new(None)))
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let script = "(function(){function u(){const t=document.title;let d=t.endsWith(' - Anivox')?t.replace(' - Anivox',''):t;window.__TAURI__.core.invoke('set_discord_rpc',{details:'Смотрит: '+d,stateText:'Anivox'}).catch(console.error)}const o=new MutationObserver(u);const t=document.querySelector('title');if(t)o.observe(t,{subtree:true,characterData:true,childList:true});setInterval(u,30000);u()})()";
+            let script = r#"
+                (function() {
+                    function setupHeader() {
+                        if (document.getElementById('tauri-header')) return;
+
+                        const header = document.createElement('div');
+                        header.id = 'tauri-header';
+                        header.style.cssText = `
+                            position: fixed;
+                            top: 0;
+                            left: 0;
+                            width: 100%;
+                            height: 32px;
+                            background: #111;
+                            color: white;
+                            display: flex;
+                            align-items: center;
+                            padding: 0 10px;
+                            z-index: 999999;
+                            border-bottom: 1px solid #333;
+                            font-family: sans-serif;
+                            user-select: none;
+                            -webkit-user-select: none;
+                        `;
+
+                        const btnStyle = `
+                            background: transparent;
+                            border: none;
+                            color: #ccc;
+                            width: 28px;
+                            height: 28px;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            cursor: pointer;
+                            font-size: 18px;
+                            border-radius: 4px;
+                            transition: background 0.2s, color 0.2s;
+                            margin-right: 4px;
+                        `;
+
+                        function createButton(html, onClick, title) {
+                            const btn = document.createElement('button');
+                            btn.innerHTML = html;
+                            btn.style.cssText = btnStyle;
+                            btn.title = title;
+                            btn.onclick = onClick;
+                            btn.onmouseenter = () => { btn.style.background = '#333'; btn.style.color = 'white'; };
+                            btn.onmouseleave = () => { btn.style.background = 'transparent'; btn.style.color = '#ccc'; };
+                            return btn;
+                        }
+
+                        const backBtn = createButton('&#10094;', () => window.history.back(), 'Назад');
+                        const forwardBtn = createButton('&#10095;', () => window.history.forward(), 'Вперед');
+                        const reloadBtn = createButton('&#8635;', () => window.location.reload(), 'Обновить');
+
+                        header.appendChild(backBtn);
+                        header.appendChild(forwardBtn);
+                        header.appendChild(reloadBtn);
+
+                        const title = document.createElement('div');
+                        title.innerText = 'Anivox';
+                        title.style.cssText = 'flex-grow: 1; text-align: center; font-size: 12px; color: #888; letter-spacing: 1px; text-transform: uppercase; font-weight: bold; margin-right: 96px;';
+                        header.appendChild(title);
+
+                        document.body.appendChild(header);
+                        
+                        // Push content down
+                        const style = document.createElement('style');
+                        style.textContent = `
+                            body { margin-top: 32px !important; }
+                            #tauri-header button:active { background: #444 !important; }
+                        `;
+                        document.head.appendChild(style);
+                    }
+
+                    if (document.readyState === 'loading') {
+                        document.addEventListener('DOMContentLoaded', setupHeader);
+                    } else {
+                        setupHeader();
+                    }
+
+                    // Discord RPC logic
+                    function updateDiscord() {
+                        const t = document.title;
+                        let d = t.endsWith(' - Anivox') ? t.replace(' - Anivox', '') : t;
+                        window.__TAURI__.core.invoke('set_discord_rpc', { details: 'Смотрит: ' + d, stateText: 'Anivox' }).catch(console.error);
+                    }
+                    const o = new MutationObserver(updateDiscord);
+                    const t = document.querySelector('title');
+                    if (t) o.observe(t, { subtree: true, characterData: true, childList: true });
+                    setInterval(updateDiscord, 30000);
+                    updateDiscord();
+                })();
+            "#;
 
             let _window = tauri::WebviewWindowBuilder::new(
                 app,
@@ -56,6 +150,8 @@ pub fn run() {
             .title("Anivox")
             .inner_size(1280.0, 720.0)
             .initialization_script(script)
+            // Optimized GPU and Video settings
+            .additional_browser_args("--use-angle=d3d11 --enable-features=VaapiVideoDecoder,D3D11VideoDecoder --enable-zero-copy --ignore-gpu-blocklist --disable-background-timer-throttling --disable-backgrounding-occluded-windows --disable-renderer-backgrounding --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,CalculateNativeWinOcclusion,IntensiveWakeUpThrottling")
             .build()?;
 
             let handle = app.handle().clone();
