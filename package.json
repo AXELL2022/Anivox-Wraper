@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "tauri dev",
     "build": "NO_STRIP=1 tauri build",
+    "build:arch": "NO_STRIP=1 tauri build --bundles deb && makepkg -e -f",
+    "install:arch": "npm run build:arch && sudo pacman -U --noconfirm anivox-*.pkg.tar.zst",
     "tauri": "tauri"
   },
   "devDependencies": {

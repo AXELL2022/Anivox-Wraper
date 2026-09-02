@@ -37,12 +37,13 @@
 * **Injected Header (`#tauri-header`):** A fixed 32px top bar with **Back** (`window.history.back()`), **Forward** (`window.history.forward()`), and **Reload** (`window.location.reload()`) buttons. It also offsets `body { margin-top: 32px !important; }`.
 * **Discord RPC Bridge:** A `MutationObserver` on `document.querySelector('title')` triggers `window.__TAURI__.core.invoke('set_discord_rpc', { ... })` whenever the page changes, stripping the `" - Anivox"` suffix from the title. Also polls every 30 seconds.
 
-### 3.2. WireGuard VPN Integration (`src-tauri/src/lib.rs`)
-* Config file: `ANIVOX-UA-48.conf` (embedded via `include_str!` and checked locally).
-* IPC Commands: `get_vpn_status()` and `toggle_vpn(enable: Option<bool>)`.
-* Linux: Uses `nmcli connection up/down ANIVOX-UA-48`, automatic import if not present, with `wg-quick` fallback.
-* Windows: Uses `wireguard.exe /installtunnelservice` and `/uninstalltunnelservice`.
-* Injected Header Switch: Interactive toggle pill with green (active) / dark (inactive) states, loading indicator, and tooltips.
+### 3.2. WireGuard In-App VPN Integration (`src-tauri/src/proxy.rs` & `src-tauri/src/lib.rs`)
+* Config file: `ANIVOX-UA-48.conf` (embedded via `include_str!`).
+* Architecture: Embedded userspace WireGuard SOCKS5 proxy (`SmartProxy`).
+* Window Binding: Attached via Tauri's `.proxy_url("socks5://127.0.0.1:10808")`.
+* IPC Commands: `get_vpn_status()` and `toggle_vpn(enable: Option<bool>)` (instantaneous atomic switch).
+* **System Isolation:** Completely process-isolated. Does NOT create system network adapters, does NOT call `nmcli`, does NOT alter system routes or DNS. Other applications (Discord, Telegram, Steam, browsers) remain on normal home internet without interruption.
+* Injected Header Switch: Interactive toggle pill with green (active) / dark (inactive) states, tooltips, and page reload on switch.
 
 ### 3.3. Discord Rich Presence (`src-tauri/src/lib.rs`)
 * Uses `discord-rich-presence = "0.2.4"`.

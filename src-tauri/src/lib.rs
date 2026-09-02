@@ -1,221 +1,33 @@
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
-use std::process::Command;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
+
+pub mod proxy;
+use proxy::SmartProxy;
 
 // State to hold the Discord IPC client
 pub struct DiscordState(pub Mutex<Option<DiscordIpcClient>>);
 
-const VPN_CONN_NAME: &str = "ANIVOX-UA-48";
+// State to hold in-app VPN routing switch
+pub struct VpnState(pub Arc<AtomicBool>);
+
 const VPN_CONFIG: &str = include_str!("../../ANIVOX-UA-48.conf");
 
-fn get_temp_config_path() -> std::path::PathBuf {
-    std::env::temp_dir().join("ANIVOX-UA-48.conf")
-}
-
-fn ensure_config_file() -> Result<std::path::PathBuf, String> {
-    let local_path = std::path::PathBuf::from("ANIVOX-UA-48.conf");
-    if local_path.exists() {
-        return Ok(local_path);
-    }
-    let temp_path = get_temp_config_path();
-    std::fs::write(&temp_path, VPN_CONFIG).map_err(|e| format!("Failed to write config: {}", e))?;
-    Ok(temp_path)
-}
-
-fn is_vpn_active() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        // 1. Fast zero-cost kernel sysfs check (<0.001ms, no process spawn)
-        if std::path::Path::new(&format!("/sys/class/net/{}", VPN_CONN_NAME)).exists() {
-            return true;
-        }
-
-        // 2. Fallback: try nmcli only if needed
-        if let Ok(output) = Command::new("nmcli")
-            .args(["-t", "-f", "NAME", "connection", "show", "--active"])
-            .output()
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                for line in stdout.lines() {
-                    if line.trim() == VPN_CONN_NAME {
-                        return true;
-                    }
-                }
-            }
-        }
-
-        false
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let service_name = format!("WireGuardTunnel${}", VPN_CONN_NAME);
-        if let Ok(output) = Command::new("sc")
-            .args(["query", &service_name])
-            .output()
-        {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if stdout.contains("RUNNING") {
-                return true;
-            }
-        }
-        false
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-    {
-        false
-    }
-}
-
-fn connect_vpn() -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    {
-        // Check if nmcli is available
-        if Command::new("nmcli").arg("--version").output().is_ok() {
-            let conn_exists = Command::new("nmcli")
-                .args(["-t", "-f", "NAME", "connection", "show"])
-                .output()
-                .map(|out| {
-                    let stdout = String::from_utf8_lossy(&out.stdout);
-                    stdout.lines().any(|l| l.trim() == VPN_CONN_NAME)
-                })
-                .unwrap_or(false);
-
-            if !conn_exists {
-                let conf_path = ensure_config_file()?;
-                let _ = Command::new("nmcli")
-                    .args(["connection", "import", "type", "wireguard", "file"])
-                    .arg(&conf_path)
-                    .output();
-            }
-
-            let up_res = Command::new("nmcli")
-                .args(["connection", "up", VPN_CONN_NAME])
-                .output()
-                .map_err(|e| format!("Failed to run nmcli up: {}", e))?;
-
-            if !up_res.status.success() {
-                let err = String::from_utf8_lossy(&up_res.stderr);
-                return Err(format!("nmcli up failed: {}", err.trim()));
-            }
-            return Ok(());
-        }
-
-        // Fallback to wg-quick
-        let conf_path = ensure_config_file()?;
-        let res = Command::new("wg-quick")
-            .arg("up")
-            .arg(&conf_path)
-            .output()
-            .map_err(|e| format!("wg-quick up failed: {}", e))?;
-
-        if !res.status.success() {
-            let err = String::from_utf8_lossy(&res.stderr);
-            return Err(format!("wg-quick up failed: {}", err.trim()));
-        }
-        Ok(())
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let conf_path = ensure_config_file()?;
-        let res = Command::new("wireguard.exe")
-            .arg("/installtunnelservice")
-            .arg(&conf_path)
-            .output()
-            .map_err(|e| format!("Failed to start WireGuard on Windows: {}", e))?;
-
-        if !res.status.success() {
-            let err = String::from_utf8_lossy(&res.stderr);
-            return Err(format!("wireguard.exe failed: {}", err.trim()));
-        }
-        Ok(())
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-    {
-        Err("Unsupported OS for WireGuard VPN".to_string())
-    }
-}
-
-fn disconnect_vpn() -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    {
-        if Command::new("nmcli").arg("--version").output().is_ok() {
-            let down_res = Command::new("nmcli")
-                .args(["connection", "down", VPN_CONN_NAME])
-                .output()
-                .map_err(|e| format!("Failed to run nmcli down: {}", e))?;
-
-            if !down_res.status.success() {
-                let err = String::from_utf8_lossy(&down_res.stderr);
-                return Err(format!("nmcli down failed: {}", err.trim()));
-            }
-            return Ok(());
-        }
-
-        let conf_path = ensure_config_file()?;
-        let res = Command::new("wg-quick")
-            .arg("down")
-            .arg(&conf_path)
-            .output()
-            .map_err(|e| format!("wg-quick down failed: {}", e))?;
-
-        if !res.status.success() {
-            let err = String::from_utf8_lossy(&res.stderr);
-            return Err(format!("wg-quick down failed: {}", err.trim()));
-        }
-        Ok(())
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let res = Command::new("wireguard.exe")
-            .arg("/uninstalltunnelservice")
-            .arg(VPN_CONN_NAME)
-            .output()
-            .map_err(|e| format!("Failed to stop WireGuard on Windows: {}", e))?;
-
-        if !res.status.success() {
-            let err = String::from_utf8_lossy(&res.stderr);
-            return Err(format!("wireguard.exe down failed: {}", err.trim()));
-        }
-        Ok(())
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-    {
-        Err("Unsupported OS for WireGuard VPN".to_string())
-    }
+#[tauri::command]
+fn get_vpn_status(state: State<'_, VpnState>) -> Result<bool, String> {
+    Ok(state.0.load(Ordering::SeqCst))
 }
 
 #[tauri::command]
-fn get_vpn_status() -> Result<bool, String> {
-    Ok(is_vpn_active())
-}
-
-#[tauri::command]
-fn toggle_vpn(enable: Option<bool>) -> Result<bool, String> {
-    let current: bool = is_vpn_active();
-    let target: bool = match enable {
+fn toggle_vpn(state: State<'_, VpnState>, enable: Option<bool>) -> Result<bool, String> {
+    let current = state.0.load(Ordering::SeqCst);
+    let target = match enable {
         Some(val) => val,
         None => !current,
     };
-
-    if target == current {
-        return Ok(current);
-    }
-
-    if target {
-        connect_vpn()?;
-    } else {
-        disconnect_vpn()?;
-    }
-
-    Ok(is_vpn_active())
+    state.0.store(target, Ordering::SeqCst);
+    Ok(target)
 }
 
 #[tauri::command]
@@ -266,7 +78,8 @@ pub fn run() {
             let script = r#"
                 (function() {
                     // Do not run inside iframes (video players, ads, third-party embeds)
-                    if (window !== window.top) return;
+                    // and never run on about:blank or invalid origins
+                    if (window !== window.top || !location.href.startsWith('https://anivox.fun')) return;
 
                     function setupHeader() {
                         if (document.getElementById('tauri-header')) return;
@@ -379,12 +192,16 @@ pub fn run() {
                             body { margin-top: 32px !important; }
                             #tauri-header button:active { background: #444 !important; }
                             #tauri-vpn-container:active { transform: scale(0.97); }
+                            :fullscreen #tauri-header,
+                            :-webkit-full-screen #tauri-header { display: none !important; }
+                            :fullscreen body,
+                            :-webkit-full-screen body { margin-top: 0 !important; }
                         `;
                         document.head.appendChild(style);
 
                         // VPN Reactive State
                         let isVpnPending = false;
-                        let isVpnOn = false;
+                        let isVpnOn = true;
 
                         function renderVpnState(active, pending) {
                             isVpnOn = !!active;
@@ -406,14 +223,14 @@ pub fn run() {
                                 switchKnob.style.transform = 'translateX(12px)';
                                 switchKnob.style.background = '#ffffff';
                                 vpnLabel.style.color = '#10b981';
-                                vpnContainer.title = 'WireGuard VPN: Подключен (ANIVOX-UA-48) — Нажмите для отключения';
+                                vpnContainer.title = 'WireGuard VPN: Включен (изолирован для Anivox) — Нажмите для прямого соединения';
                             } else {
                                 switchTrack.style.background = '#2a2a2a';
                                 switchTrack.style.borderColor = '#444';
                                 switchKnob.style.transform = 'translateX(0px)';
                                 switchKnob.style.background = '#888';
                                 vpnLabel.style.color = '#888';
-                                vpnContainer.title = 'WireGuard VPN: Отключен — Нажмите для подключения';
+                                vpnContainer.title = 'WireGuard VPN: Отключен (прямое соединение) — Нажмите для включения VPN';
                             }
                         }
 
@@ -436,6 +253,7 @@ pub fn run() {
                             try {
                                 const res = await window.__TAURI__.core.invoke('toggle_vpn', { enable: nextState });
                                 renderVpnState(res, false);
+                                location.reload();
                             } catch (err) {
                                 console.error('Failed to toggle VPN:', err);
                                 alert('Ошибка переключения VPN: ' + err);
@@ -478,11 +296,21 @@ pub fn run() {
                 })();
             "#;
 
+            let proxy = tauri::async_runtime::block_on(async {
+                SmartProxy::start(VPN_CONFIG).await
+            }).map_err(|e| format!("Failed to start SmartProxy: {}", e))?;
+
+            let proxy_url_str = format!("socks5://127.0.0.1:{}", proxy.port);
+            let vpn_state = VpnState(Arc::clone(&proxy.is_vpn_enabled));
+            app.manage(vpn_state);
+            app.manage(proxy);
+
             let _window = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
                 tauri::WebviewUrl::External("https://anivox.fun/".parse().unwrap()),
             )
+            .proxy_url(url::Url::parse(&proxy_url_str).expect("Valid proxy URL"))
             .title("Anivox")
             .inner_size(1280.0, 720.0)
             .initialization_script(script)

@@ -32,10 +32,11 @@ This project is a desktop application wrapper for the website `https://anivox.fu
 1. **Remote Navigation & UI Injection (`src-tauri/src/lib.rs`):**
    - The webview loads `tauri::WebviewUrl::External("https://anivox.fun/".parse().unwrap())`.
    - A custom topbar (`#tauri-header`) is injected with Back, Forward, Reload buttons, and a WireGuard VPN toggle.
-2. **WireGuard VPN Toggle (`ANIVOX-UA-48`):**
-   - Controlled via `get_vpn_status` and `toggle_vpn` IPC commands.
-   - Linux: Uses `nmcli` (with automatic import if missing) or `wg-quick` fallback.
-   - Windows: Uses `wireguard.exe /installtunnelservice` and `/uninstalltunnelservice`.
+2. **Isolated In-App WireGuard VPN Toggle (`ANIVOX-UA-48`):**
+   - Implemented via high-speed userspace WireGuard SOCKS5 engine (`SmartProxy` in `src-tauri/src/proxy.rs` using embedded `wireproxy`).
+   - Runs on local port (e.g. `127.0.0.1:10808`), attached to the webview via `.proxy_url()`.
+   - **Zero system impact**: No network interfaces, no `nmcli`, no routes/DNS changes, other apps (Discord, Telegram, Steam) never touch the VPN and system internet never disconnects.
+   - Controlled via `get_vpn_status` and `toggle_vpn` IPC commands (atomic boolean in memory).
 3. **Discord Rich Presence:**
    - Managed via `DiscordState` and the `discord-rich-presence` crate (App ID `1504862803335315609`).
    - Injected script observes document title mutations and invokes `set_discord_rpc`.
@@ -46,5 +47,7 @@ This project is a desktop application wrapper for the website `https://anivox.fu
 
 ## Common Commands
 - Development: `npm run tauri dev`
-- Production Build: `npm run tauri build`
+- Native Arch Linux Build: `npm run build:arch` (produces `anivox-0.1.0-1-x86_64.pkg.tar.zst`)
+- Install on Arch: `npm run install:arch` (or `sudo pacman -U anivox-0.1.0-1-x86_64.pkg.tar.zst`)
+- Standard Universal Build: `npm run build` (produces AppImage, deb, rpm)
 - Fast Rust Check: `cargo check --manifest-path src-tauri/Cargo.toml`
