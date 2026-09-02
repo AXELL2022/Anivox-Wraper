@@ -9,6 +9,7 @@
   "permissions": [
     "core:default",
     "opener:default",
-    "allow-set-discord-rpc"
+    "allow-set-discord-rpc",
+    "allow-vpn-commands"
   ]
 }

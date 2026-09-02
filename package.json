@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
-    "build": "tauri build",
+    "build": "NO_STRIP=1 tauri build",
     "tauri": "tauri"
   },
   "devDependencies": {

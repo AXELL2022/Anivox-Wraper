@@ -1,0 +1,7 @@
+[[permission]]
+identifier = "allow-vpn-commands"
+description = "Allows the frontend to query and toggle WireGuard VPN status"
+commands.allow = [
+    "get_vpn_status",
+    "toggle_vpn"
+]
