@@ -1,4 +1,5 @@
 use std::fs;
+use std::os::windows::process::CommandExt;
 use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -6,7 +7,8 @@ use fast_socks5::server::Socks5ServerProtocol;
 use fast_socks5::{ReplyError, Socks5Command};
 use tokio::net::TcpListener;
 
-const WIREPROXY_BIN: &[u8] = include_bytes!("../binaries/wireproxy");
+const WIREPROXY_BIN: &[u8] = include_bytes!("../binaries/wireproxy.exe");
+const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 pub struct SmartProxy {
     pub is_vpn_enabled: Arc<AtomicBool>,
@@ -27,7 +29,7 @@ impl Drop for SmartProxy {
 impl SmartProxy {
     pub async fn start(wg_config_str: &str) -> Result<Self, String> {
         let temp_dir = std::env::temp_dir();
-        let wireproxy_path = temp_dir.join("anivox_wireproxy");
+        let wireproxy_path = temp_dir.join("anivox_wireproxy.exe");
         let conf_path = temp_dir.join("anivox_wireproxy.conf");
 
         // Overwrite or write binary if missing or size differs
@@ -38,17 +40,6 @@ impl SmartProxy {
                 .map_err(|e| format!("Failed to write wireproxy binary: {}", e))?;
         }
 
-        // Ensure executable permissions on Unix
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            if let Ok(metadata) = fs::metadata(&wireproxy_path) {
-                let mut perms = metadata.permissions();
-                perms.set_mode(0o755);
-                let _ = fs::set_permissions(&wireproxy_path, perms);
-            }
-        }
-
         // Parse WG config and format for wireproxy SOCKS5 and HTTP inbound
         let conf_content = format!(
             "{}\n\n[Socks5]\nBindAddress = 127.0.0.1:10809\n\n[Http]\nBindAddress = 127.0.0.1:10807\n",
@@ -57,15 +48,17 @@ impl SmartProxy {
         fs::write(&conf_path, conf_content)
             .map_err(|e| format!("Failed to write wireproxy config: {}", e))?;
 
-        // Kill any previous orphan wireproxy instance
-        let _ = Command::new("pkill")
-            .args(["-f", "anivox_wireproxy"])
-            .status();
+        // Kill any previous orphan wireproxy without flashing a console window
+        let mut kill_cmd = Command::new("taskkill");
+        kill_cmd.args(["/F", "/IM", "anivox_wireproxy.exe"]);
+        kill_cmd.creation_flags(CREATE_NO_WINDOW);
+        let _ = kill_cmd.status();
         tokio::time::sleep(std::time::Duration::from_millis(150)).await;
 
-        // Spawn wireproxy
+        // Spawn wireproxy with hidden console window
         let mut cmd = Command::new(&wireproxy_path);
         cmd.args(["-c", conf_path.to_str().unwrap(), "--silent"]);
+        cmd.creation_flags(CREATE_NO_WINDOW);
 
         let child = cmd
             .spawn()
