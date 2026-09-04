@@ -66,20 +66,302 @@ fn set_discord_rpc(
     }
 }
 
+#[tauri::command]
+fn open_in_mpv(
+    state: State<'_, VpnState>,
+    url: String,
+    title: Option<String>,
+    start_time: Option<f64>,
+    sub_url: Option<String>,
+    token: Option<String>,
+) -> Result<(), String> {
+    println!("[MPV] Launch requested for URL: {}", url);
+    let mpv_exe = std::path::Path::new(r"F:\Mpv\mpv.exe");
+    let (mpv_path, working_dir) = if mpv_exe.exists() {
+        (r"F:\Mpv\mpv.exe".to_string(), Some(r"F:\Mpv"))
+    } else {
+        ("mpv".to_string(), None)
+    };
+
+    let mut cmd = std::process::Command::new(&mpv_path);
+    if let Some(dir) = working_dir {
+        cmd.current_dir(dir);
+    }
+    cmd.arg(&url);
+
+    if let Some(t) = title {
+        if !t.is_empty() {
+            cmd.arg(format!("--force-media-title={}", t));
+        }
+    }
+
+    if let Some(st) = start_time {
+        if st > 0.0 {
+            cmd.arg(format!("--start={:.2}", st));
+        }
+    }
+
+    if let Some(sub) = sub_url {
+        if !sub.is_empty() {
+            cmd.arg(format!("--sub-file={}", sub));
+        }
+    }
+
+    // Pass headers cleanly to MPV and FFmpeg demuxer
+    cmd.arg("--referrer=https://anivox.fun/");
+    cmd.arg("--http-header-fields-append=Origin: https://anivox.fun");
+    if let Some(tok) = token {
+        if !tok.is_empty() {
+            cmd.arg(format!("--http-header-fields-append=Authorization: Bearer {}", tok));
+        }
+    }
+    cmd.arg("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0");
+
+    // UI and logging flags: show window immediately, don't exit silently on error, write debug log
+    cmd.arg("--force-window=immediate");
+    cmd.arg("--keep-open=yes");
+    cmd.arg(r"--log-file=F:\Mpv\mpv_debug.log");
+
+    // Route through WireGuard HTTP proxy (supported natively by FFmpeg & MPV) if VPN is active
+    if state.0.load(Ordering::SeqCst) {
+        cmd.arg("--http-proxy=http://127.0.0.1:10807");
+        cmd.arg("--ytdl-raw-options=proxy=[http://127.0.0.1:10807]");
+    }
+
+    match cmd.spawn() {
+        Ok(child) => {
+            println!("[MPV] Successfully started MPV (PID: {})", child.id());
+            Ok(())
+        }
+        Err(e) => {
+            let msg = format!("Failed to launch MPV at {}: {}", mpv_path, e);
+            eprintln!("[MPV Error] {}", msg);
+            Err(msg)
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let browser_args = "--use-angle=d3d11 --enable-features=NvidiaVpSuperResolution,IntelVpSuperResolution,msEdgeVideoSuperResolution,D3D11VideoDecoder,DirectCompositionVideoOverlays --enable-nv12-dxgi-video --enable-zero-copy --ignore-gpu-blocklist --enable-gpu-rasterization --force-high-performance-gpu --enable-hardware-overlays=single-fullscreen,single-on-top,underlay --disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection";
-    std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", browser_args);
-
     tauri::Builder::default()
         .manage(DiscordState(Mutex::new(None)))
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            let browser_args = "--use-angle=d3d11 --enable-features=NvidiaVpSuperResolution,NvidiaVpTrueHDR,DirectCompositionVideoOverlays,DirectCompositionLetterboxVideoOptimization,DirectCompositionScalableVideoProcessing,DirectCompositionUseNV12DecodeSwapChain,UseD3D11VideoProcessor,D3D11VideoDecoder,HardwareAcceleratedVideoDecode,AllowDcompOverlaysInBackbuffer --disable-features=msEdgeVideoSuperResolution,msWebOOUI,msPdfOOUI,msSmartScreenProtection --enable-nv12-dxgi-video --ignore-gpu-blocklist --enable-gpu-rasterization --force-high-performance-gpu";
             let script = r#"
                 (function() {
-                    // Do not run inside iframes (video players, ads, third-party embeds)
-                    // and never run on about:blank or invalid origins
+                    // Multi-layer video stream & subtitle interceptor for MPV
+                    let apiLinks = null;
+                    let lastStreamUrl = null;
+                    let lastSubUrl = null;
+
+                    function resolveUrl(u) {
+                        if (!u || typeof u !== 'string') return null;
+                        if (u.startsWith('//')) return 'https:' + u;
+                        if (u.startsWith('http://')) return u.replace('http://', 'https://');
+                        if (!u.startsWith('http')) return 'https://' + u;
+                        return u;
+                    }
+
+                    // 1. Hook XMLHttpRequest for episodes API and stream manifests
+                    try {
+                        const origXhrOpen = XMLHttpRequest.prototype.open;
+                        const origXhrSend = XMLHttpRequest.prototype.send;
+                        XMLHttpRequest.prototype.open = function(method, url) {
+                            this._anivoxUrl = typeof url === 'string' ? url : (url && url.href ? url.href : String(url));
+                            return origXhrOpen.apply(this, arguments);
+                        };
+                        XMLHttpRequest.prototype.send = function() {
+                            this.addEventListener('load', function() {
+                                try {
+                                    const u = this._anivoxUrl || '';
+                                    if (u.includes('episodes/')) {
+                                        const data = JSON.parse(this.responseText);
+                                        if (data && data.links) {
+                                            apiLinks = data.links;
+                                            console.log('[Anivox-MPV] Intercepted episode links from XHR:', apiLinks);
+                                        }
+                                    }
+                                    if (u.includes('.m3u8') || u.includes('.mp4') || u.includes('/stream') || u.includes('/hls')) {
+                                        if (!u.includes('.ts') && !u.includes('segment')) {
+                                            lastStreamUrl = u;
+                                            console.log('[Anivox-MPV] Intercepted stream URL from XHR:', u);
+                                        }
+                                    }
+                                    if (u.includes('.ass')) {
+                                        lastSubUrl = u;
+                                    }
+                                } catch (e) {}
+                            });
+                            return origXhrSend.apply(this, arguments);
+                        };
+
+                        // 2. Hook Fetch API
+                        const origFetch = window.fetch;
+                        window.fetch = async function(input, init) {
+                            const u = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+                            const response = await origFetch.apply(this, arguments);
+                            try {
+                                if (u.includes('episodes/')) {
+                                    const clone = response.clone();
+                                    clone.json().then(data => {
+                                        if (data && data.links) {
+                                            apiLinks = data.links;
+                                            console.log('[Anivox-MPV] Intercepted episode links from fetch:', apiLinks);
+                                        }
+                                    }).catch(() => {});
+                                }
+                                if (u.includes('.m3u8') || u.includes('.mp4') || u.includes('/stream') || u.includes('/hls')) {
+                                    if (!u.includes('.ts') && !u.includes('segment')) {
+                                        lastStreamUrl = u;
+                                        console.log('[Anivox-MPV] Intercepted stream URL from fetch:', u);
+                                    }
+                                }
+                                if (u.includes('.ass')) {
+                                    lastSubUrl = u;
+                                }
+                            } catch (e) {}
+                            return response;
+                        };
+                    } catch (e) {
+                        console.error('[Anivox-MPV] Failed to hook network:', e);
+                    }
+
+                    // Only inject header, UI and hotkeys into the top-level window
                     if (window !== window.top || !location.href.startsWith('https://anivox.fun')) return;
+
+                    function setBtnStatus(text, color, resetAfterMs) {
+                        const btn = document.getElementById('tauri-mpv-btn');
+                        if (!btn) return;
+                        btn.innerHTML = `<span style="font-size: 11px; font-weight: 700; letter-spacing: 0.5px; color: ${color};">${text}</span>`;
+                        if (resetAfterMs) {
+                            setTimeout(() => {
+                                btn.innerHTML = '<span style="font-size: 11px; font-weight: 700; letter-spacing: 0.5px; color: #ffa9de;">▶ MPV</span>';
+                            }, resetAfterMs);
+                        }
+                    }
+
+                    function findActiveStream() {
+                        // 1. Direct inspection of Vue 3 component state (.player-container)
+                        const playerEls = [
+                            document.querySelector('.player-container'),
+                            document.querySelector('video.video-element'),
+                            document.querySelector('video')
+                        ];
+                        for (const el of playerEls) {
+                            if (!el) continue;
+                            const comp = el.__vueParentComponent || el._vnode?.component || el.__vue_app__;
+                            if (comp) {
+                                const ctx = comp.ctx || comp.proxy || comp.setupState;
+                                if (ctx) {
+                                    if (ctx.videoSrc && typeof ctx.videoSrc === 'string' && !ctx.videoSrc.startsWith('blob:')) {
+                                        console.log('[Anivox-MPV] Found stream in Vue ctx.videoSrc:', ctx.videoSrc);
+                                        return { url: resolveUrl(ctx.videoSrc), time: ctx.currentTime || 0 };
+                                    }
+                                    if (ctx.links && typeof ctx.links === 'object') {
+                                        const q = ctx.quality || Object.keys(ctx.links)[0];
+                                        const u = ctx.links[q] || Object.values(ctx.links)[0];
+                                        if (u && typeof u === 'string' && !u.startsWith('blob:')) {
+                                            console.log('[Anivox-MPV] Found stream in Vue ctx.links:', u);
+                                            return { url: resolveUrl(u), time: ctx.currentTime || 0 };
+                                        }
+                                    }
+                                    if (ctx.hls && ctx.hls.url) {
+                                        console.log('[Anivox-MPV] Found stream in Vue ctx.hls.url:', ctx.hls.url);
+                                        return { url: resolveUrl(ctx.hls.url), time: ctx.currentTime || 0 };
+                                    }
+                                }
+                            }
+                        }
+
+                        // 2. Captured API links from episodes endpoint
+                        if (apiLinks && typeof apiLinks === 'object') {
+                            const q = Object.keys(apiLinks)[0];
+                            const u = apiLinks[q] || Object.values(apiLinks)[0];
+                            if (u && typeof u === 'string') {
+                                console.log('[Anivox-MPV] Found stream in apiLinks:', u);
+                                return { url: resolveUrl(u), time: 0 };
+                            }
+                        }
+
+                        // 3. Network intercepted stream URL (XHR / Fetch)
+                        if (lastStreamUrl && typeof lastStreamUrl === 'string' && !lastStreamUrl.startsWith('blob:')) {
+                            console.log('[Anivox-MPV] Found stream in lastStreamUrl:', lastStreamUrl);
+                            return { url: resolveUrl(lastStreamUrl), time: 0 };
+                        }
+
+                        // 4. HTML5 video tag currentSrc / src
+                        const video = document.querySelector('video');
+                        if (video) {
+                            if (video.currentSrc && !video.currentSrc.startsWith('blob:')) {
+                                return { url: resolveUrl(video.currentSrc), time: video.currentTime || 0 };
+                            }
+                            if (video.src && !video.src.startsWith('blob:')) {
+                                return { url: resolveUrl(video.src), time: video.currentTime || 0 };
+                            }
+                        }
+
+                        // 5. Fallback iframe player (Kodik / Sibnet etc.)
+                        const iframe = document.querySelector('iframe');
+                        if (iframe && iframe.src && iframe.src.startsWith('http')) {
+                            console.log('[Anivox-MPV] Found stream in fallback iframe:', iframe.src);
+                            return { url: iframe.src, time: 0 };
+                        }
+
+                        return null;
+                    }
+
+                    async function launchInMpv() {
+                        setBtnStatus('⌛ Поиск...', '#ffeb3b', 0);
+                        const video = document.querySelector('video.video-element') || document.querySelector('video');
+                        const info = findActiveStream();
+
+                        if (!info || !info.url) {
+                            console.warn('[Anivox-MPV] Stream URL not found yet');
+                            setBtnStatus('⚠ Включите серию!', '#ff5252', 2500);
+                            return;
+                        }
+
+                        const startTime = (video && video.currentTime) ? video.currentTime : (info.time || 0);
+                        if (video && !video.paused) {
+                            video.pause();
+                        }
+
+                        setBtnStatus('▶ Запуск MPV...', '#69f0ae', 0);
+
+                        let title = document.title || 'Anivox';
+                        title = title.replace(/ — Anivox| - Anivox| \| Anivox/gi, '').trim();
+                        const token = localStorage.getItem('token') || null;
+
+                        try {
+                            if (window.__TAURI__ && window.__TAURI__.core) {
+                                await window.__TAURI__.core.invoke('open_in_mpv', {
+                                    url: info.url,
+                                    title: title || null,
+                                    startTime: startTime > 0 ? startTime : null,
+                                    subUrl: lastSubUrl || null,
+                                    token: token
+                                });
+                                setBtnStatus('✔ Запущен!', '#69f0ae', 2500);
+                            } else {
+                                throw new Error('Tauri API недоступен');
+                            }
+                        } catch (err) {
+                            console.error('[Anivox-MPV] Launch error:', err);
+                            setBtnStatus('⚠ Ошибка!', '#ff5252', 3000);
+                        }
+                    }
+
+                    window.addEventListener('keydown', (e) => {
+                        const tag = document.activeElement ? document.activeElement.tagName : '';
+                        if (tag === 'INPUT' || tag === 'TEXTAREA' || (document.activeElement && document.activeElement.isContentEditable)) {
+                            return;
+                        }
+                        if (e.key === 'm' || e.key === 'M' || e.key === 'ь' || e.key === 'Ь') {
+                            e.preventDefault();
+                            launchInMpv();
+                        }
+                    });
 
                     function setupHeader() {
                         if (document.getElementById('tauri-header')) return;
@@ -178,6 +460,36 @@ pub fn run() {
                         vpnContainer.appendChild(switchTrack);
                         header.appendChild(vpnContainer);
 
+                        // Vertical divider
+                        const divider2 = document.createElement('div');
+                        divider2.style.cssText = 'width: 1px; height: 16px; background: #333; margin: 0 6px;';
+                        header.appendChild(divider2);
+
+                        // MPV launch button
+                        const mpvBtn = document.createElement('button');
+                        mpvBtn.id = 'tauri-mpv-btn';
+                        mpvBtn.innerHTML = '<span style="font-size: 11px; font-weight: 700; letter-spacing: 0.5px;">▶ MPV</span>';
+                        mpvBtn.title = 'Воспроизвести текущее видео в MPV (Горячая клавиша: M)';
+                        mpvBtn.style.cssText = `
+                            background: #1f1f23;
+                            border: 1px solid #38383f;
+                            color: #ffa9de;
+                            padding: 2px 8px;
+                            height: 22px;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            cursor: pointer;
+                            border-radius: 4px;
+                            transition: background 0.15s, color 0.15s, border-color 0.15s;
+                            user-select: none;
+                            -webkit-user-select: none;
+                        `;
+                        mpvBtn.onmouseenter = () => { mpvBtn.style.background = '#2d2d35'; mpvBtn.style.borderColor = '#ffa9de'; };
+                        mpvBtn.onmouseleave = () => { mpvBtn.style.background = '#1f1f23'; mpvBtn.style.borderColor = '#38383f'; };
+                        mpvBtn.onclick = launchInMpv;
+                        header.appendChild(mpvBtn);
+
                         // Center title
                         const title = document.createElement('div');
                         title.innerText = 'Anivox';
@@ -192,10 +504,30 @@ pub fn run() {
                             body { margin-top: 32px !important; }
                             #tauri-header button:active { background: #444 !important; }
                             #tauri-vpn-container:active { transform: scale(0.97); }
+                            #tauri-mpv-btn:active { transform: scale(0.96) !important; background: #383842 !important; }
                             :fullscreen #tauri-header,
                             :-webkit-full-screen #tauri-header { display: none !important; }
                             :fullscreen body,
                             :-webkit-full-screen body { margin-top: 0 !important; }
+
+                            /* DirectComposition Video Overlay & NVIDIA RTX VSR Fixes */
+                            .player-container, .player, [class*="player"], .video-element, video, iframe {
+                                border-radius: 0 !important;
+                                -webkit-mask: none !important;
+                                mask: none !important;
+                                filter: none !important;
+                                backdrop-filter: none !important;
+                                transform: none !important;
+                            }
+                            video.video-element, video {
+                                background-color: transparent !important;
+                            }
+                            .touch-zone {
+                                background: transparent !important;
+                            }
+                            .libassjs-canvas {
+                                pointer-events: none !important;
+                            }
                         `;
                         document.head.appendChild(style);
 
@@ -301,6 +633,13 @@ pub fn run() {
             }).map_err(|e| format!("Failed to start SmartProxy: {}", e))?;
 
             let proxy_url_str = format!("socks5://127.0.0.1:{}", proxy.port);
+            let full_browser_args = format!(
+                "{} --proxy-server=socks5://127.0.0.1:{} --host-resolver-rules=\"MAP * ~NOTFOUND , EXCLUDE 127.0.0.1\"",
+                browser_args,
+                proxy.port
+            );
+            std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", &full_browser_args);
+
             let vpn_state = VpnState(Arc::clone(&proxy.is_vpn_enabled));
             app.manage(vpn_state);
             app.manage(proxy);
@@ -315,7 +654,7 @@ pub fn run() {
             .inner_size(1280.0, 720.0)
             .initialization_script(script)
             // Optimized GPU, Video and RTX Video Super Resolution (VSR) settings
-            .additional_browser_args(browser_args)
+            .additional_browser_args(&full_browser_args)
             .build()?;
 
             let handle = app.handle().clone();
@@ -342,7 +681,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             set_discord_rpc,
             get_vpn_status,
-            toggle_vpn
+            toggle_vpn,
+            open_in_mpv
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

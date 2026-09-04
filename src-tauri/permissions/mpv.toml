@@ -1,0 +1,6 @@
+[[permission]]
+identifier = "allow-mpv-commands"
+description = "Allows opening video streams in MPV player"
+commands.allow = [
+    "open_in_mpv"
+]

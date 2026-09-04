@@ -3,5 +3,7 @@ src-tauri/target/
 node_modules/
 *.pkg.tar.zst
 pkg/
-src/
+/src/
 /tmp
+backup_linux/
+*.log
