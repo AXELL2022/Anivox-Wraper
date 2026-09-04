@@ -1,5 +1,5 @@
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::{Manager, State};
 
@@ -11,6 +11,9 @@ pub struct DiscordState(pub Mutex<Option<DiscordIpcClient>>);
 
 // State to hold in-app VPN routing switch
 pub struct VpnState(pub Arc<AtomicBool>);
+
+// State to hold detected display refresh rate (e.g. 240Hz, 144Hz) to bypass WSLg 60Hz lock
+pub struct DisplayState(pub Arc<AtomicU32>);
 
 const VPN_CONFIG: &str = include_str!("../../ANIVOX-UA-48.conf");
 
@@ -69,6 +72,7 @@ fn set_discord_rpc(
 #[tauri::command]
 fn open_in_mpv(
     state: State<'_, VpnState>,
+    display_state: State<'_, DisplayState>,
     url: String,
     title: Option<String>,
     start_time: Option<f64>,
@@ -76,17 +80,7 @@ fn open_in_mpv(
     token: Option<String>,
 ) -> Result<(), String> {
     println!("[MPV] Launch requested for URL: {}", url);
-    let mpv_exe = std::path::Path::new(r"F:\Mpv\mpv.exe");
-    let (mpv_path, working_dir) = if mpv_exe.exists() {
-        (r"F:\Mpv\mpv.exe".to_string(), Some(r"F:\Mpv"))
-    } else {
-        ("mpv".to_string(), None)
-    };
-
-    let mut cmd = std::process::Command::new(&mpv_path);
-    if let Some(dir) = working_dir {
-        cmd.current_dir(dir);
-    }
+    let mut cmd = std::process::Command::new("mpv");
     cmd.arg(&url);
 
     if let Some(t) = title {
@@ -115,12 +109,35 @@ fn open_in_mpv(
             cmd.arg(format!("--http-header-fields-append=Authorization: Bearer {}", tok));
         }
     }
-    cmd.arg("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0");
+    cmd.arg("--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36");
 
-    // UI and logging flags: show window immediately, don't exit silently on error, write debug log
+    // UI flags: show window immediately, keep open on playback end
     cmd.arg("--force-window=immediate");
     cmd.arg("--keep-open=yes");
-    cmd.arg(r"--log-file=F:\Mpv\mpv_debug.log");
+
+    // Linux & Wayland video output compatibility (prevents vo_x11_init assertion failure)
+    cmd.arg("--gpu-context=wayland,x11egl");
+    cmd.arg("--vo=gpu,dmabuf-wayland,wlshm,x11");
+
+    cmd.arg("--hwdec=auto-safe");
+
+    // Eliminate fullscreen grid/mesh artifacts from FBO 16-bit float shaders and dither matrix
+    cmd.arg("--dither=no");
+    cmd.arg("--dither-depth=no");
+    cmd.arg("--fbo-format=rgba8");
+    cmd.arg("--scale=bilinear");
+    cmd.arg("--cscale=bilinear");
+
+    // Optimize Wayland frame timing & eliminate false "output" dropped frames caused by compositor jitter
+    cmd.arg("--wayland-present=no");
+    cmd.arg("--video-sync=audio");
+    cmd.arg("--video-latency-hacks=yes");
+
+    // Dynamic display refresh rate override (e.g. 240Hz, 144Hz) to eliminate 60Hz lock
+    let hz = display_state.0.load(Ordering::SeqCst);
+    if hz > 0 {
+        cmd.arg(format!("--display-fps-override={}", hz));
+    }
 
     // Route through WireGuard HTTP proxy (supported natively by FFmpeg & MPV) if VPN is active
     if state.0.load(Ordering::SeqCst) {
@@ -134,7 +151,7 @@ fn open_in_mpv(
             Ok(())
         }
         Err(e) => {
-            let msg = format!("Failed to launch MPV at {}: {}", mpv_path, e);
+            let msg = format!("Failed to launch MPV: {}", e);
             eprintln!("[MPV Error] {}", msg);
             Err(msg)
         }
@@ -147,7 +164,6 @@ pub fn run() {
         .manage(DiscordState(Mutex::new(None)))
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let browser_args = "--use-angle=d3d11 --enable-features=NvidiaVpSuperResolution,NvidiaVpTrueHDR,DirectCompositionVideoOverlays,DirectCompositionLetterboxVideoOptimization,DirectCompositionScalableVideoProcessing,DirectCompositionUseNV12DecodeSwapChain,UseD3D11VideoProcessor,D3D11VideoDecoder,HardwareAcceleratedVideoDecode,AllowDcompOverlaysInBackbuffer --disable-features=msEdgeVideoSuperResolution,msWebOOUI,msPdfOOUI,msSmartScreenProtection --enable-nv12-dxgi-video --ignore-gpu-blocklist --enable-gpu-rasterization --force-high-performance-gpu";
             let script = r#"
                 (function() {
                     // Multi-layer video stream & subtitle interceptor for MPV
@@ -339,7 +355,7 @@ pub fn run() {
                                     url: info.url,
                                     title: title || null,
                                     startTime: startTime > 0 ? startTime : null,
-                                    subUrl: lastSubUrl || null,
+                                    subUrl: lastSubUrl ? encodeURI(lastSubUrl) : null,
                                     token: token
                                 });
                                 setBtnStatus('✔ Запущен!', '#69f0ae', 2500);
@@ -633,16 +649,33 @@ pub fn run() {
             }).map_err(|e| format!("Failed to start SmartProxy: {}", e))?;
 
             let proxy_url_str = format!("socks5://127.0.0.1:{}", proxy.port);
-            let full_browser_args = format!(
-                "{} --proxy-server=socks5://127.0.0.1:{} --host-resolver-rules=\"MAP * ~NOTFOUND , EXCLUDE 127.0.0.1\"",
-                browser_args,
-                proxy.port
-            );
-            std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", &full_browser_args);
-
             let vpn_state = VpnState(Arc::clone(&proxy.is_vpn_enabled));
             app.manage(vpn_state);
             app.manage(proxy);
+
+            let default_hz = if std::path::Path::new("/mnt/wslg").exists() { 240 } else { 0 };
+            let display_rate = Arc::new(AtomicU32::new(default_hz));
+            let display_rate_clone = Arc::clone(&display_rate);
+            app.manage(DisplayState(display_rate));
+
+            std::thread::spawn(move || {
+                if std::path::Path::new("/mnt/wslg").exists() {
+                    let cmd = "powershell.exe -NoProfile -Command \"(Get-CimInstance Win32_VideoController | Select-Object -ExpandProperty CurrentRefreshRate)[0]\"";
+                    if let Ok(output) = std::process::Command::new("sh")
+                        .args(["-c", cmd])
+                        .output()
+                    {
+                        if let Ok(s) = String::from_utf8(output.stdout) {
+                            if let Ok(val) = s.trim().parse::<u32>() {
+                                if val > 0 {
+                                    display_rate_clone.store(val, Ordering::SeqCst);
+                                    println!("[Display] Confirmed host refresh rate: {} Hz", val);
+                                }
+                            }
+                        }
+                    }
+                }
+            });
 
             let _window = tauri::WebviewWindowBuilder::new(
                 app,
@@ -653,8 +686,6 @@ pub fn run() {
             .title("Anivox")
             .inner_size(1280.0, 720.0)
             .initialization_script(script)
-            // Optimized GPU, Video and RTX Video Super Resolution (VSR) settings
-            .additional_browser_args(&full_browser_args)
             .build()?;
 
             let handle = app.handle().clone();
