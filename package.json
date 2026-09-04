@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "tauri dev",
-    "build": "tauri build",
+    "build": "NO_STRIP=1 tauri build",
+    "build:arch": "NO_STRIP=1 tauri build --bundles deb && makepkg -e -f",
+    "install:arch": "bun run build:arch && sudo pacman -U --noconfirm anivox-*.pkg.tar.zst",
     "tauri": "tauri"
   },
   "devDependencies": {
