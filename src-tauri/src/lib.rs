@@ -120,6 +120,8 @@ fn open_in_mpv(
     // UI and logging flags: show window immediately, don't exit silently on error, write debug log
     cmd.arg("--force-window=immediate");
     cmd.arg("--keep-open=yes");
+    cmd.arg("--hls-bitrate=max");
+    cmd.arg("--ytdl-format=bestvideo+bestaudio/best");
     cmd.arg(r"--log-file=F:\Mpv\mpv_debug.log");
 
     // Route through WireGuard HTTP proxy (supported natively by FFmpeg & MPV) if VPN is active
@@ -152,6 +154,7 @@ pub fn run() {
                 (function() {
                     // Multi-layer video stream & subtitle interceptor for MPV
                     let apiLinks = null;
+                    let currentHlsUrl = null;
                     let lastStreamUrl = null;
                     let lastSubUrl = null;
 
@@ -182,8 +185,12 @@ pub fn run() {
                                             console.log('[Anivox-MPV] Intercepted episode links from XHR:', apiLinks);
                                         }
                                     }
-                                    if (u.includes('.m3u8') || u.includes('.mp4') || u.includes('/stream') || u.includes('/hls')) {
-                                        if (!u.includes('.ts') && !u.includes('segment')) {
+                                    if (u.includes('/api/hls/')) {
+                                        currentHlsUrl = u;
+                                        lastStreamUrl = u;
+                                        console.log('[Anivox-MPV] Intercepted active HLS URL from XHR:', u);
+                                    } else if (u.includes('.m3u8') || u.includes('.mp4') || u.includes('/stream')) {
+                                        if (!u.includes('.ts') && !u.includes('segment') && !u.includes('/audio/') && !u.includes('/subs/')) {
                                             lastStreamUrl = u;
                                             console.log('[Anivox-MPV] Intercepted stream URL from XHR:', u);
                                         }
@@ -211,8 +218,12 @@ pub fn run() {
                                         }
                                     }).catch(() => {});
                                 }
-                                if (u.includes('.m3u8') || u.includes('.mp4') || u.includes('/stream') || u.includes('/hls')) {
-                                    if (!u.includes('.ts') && !u.includes('segment')) {
+                                if (u.includes('/api/hls/')) {
+                                    currentHlsUrl = u;
+                                    lastStreamUrl = u;
+                                    console.log('[Anivox-MPV] Intercepted active HLS URL from fetch:', u);
+                                } else if (u.includes('.m3u8') || u.includes('.mp4') || u.includes('/stream')) {
+                                    if (!u.includes('.ts') && !u.includes('segment') && !u.includes('/audio/') && !u.includes('/subs/')) {
                                         lastStreamUrl = u;
                                         console.log('[Anivox-MPV] Intercepted stream URL from fetch:', u);
                                     }
@@ -241,8 +252,42 @@ pub fn run() {
                         }
                     }
 
+                    function parseQualityHeight(q) {
+                        if (!q) return 0;
+                        const s = String(q).toUpperCase().replace('~', '').replace('_UPSCALE', '').trim();
+                        if (s === '4K' || s.includes('2160')) return 2160;
+                        if (s === '2K' || s.includes('1440')) return 1440;
+                        return parseInt(s) || 0;
+                    }
+
+                    function selectMaxStreamUrl(links) {
+                        if (!links) return null;
+                        if (typeof links === 'string') return { url: resolveUrl(links), quality: 'MAX' };
+
+                        // Sort descending by resolution (4K / 2160 > 2K / 1440 > 1080 > 720 > 480 > 360)
+                        const sortedKeys = Object.keys(links).sort((a, b) => parseQualityHeight(b) - parseQualityHeight(a));
+                        for (const k of sortedKeys) {
+                            if (links[k] && links[k] !== 'premium' && typeof links[k] === 'string') {
+                                console.log('[Anivox-MPV] Forced MAX quality selected:', k, '->', links[k]);
+                                return { url: resolveUrl(links[k]), quality: k };
+                            }
+                        }
+
+                        const firstK = Object.keys(links)[0];
+                        return { url: resolveUrl(links[firstK]), quality: firstK };
+                    }
+
                     function findActiveStream() {
-                        // 1. Direct inspection of Vue 3 component state (.player-container)
+                        // 1. Captured API links from episodes endpoint - FORCED MAX QUALITY!
+                        if (apiLinks && typeof apiLinks === 'object') {
+                            const res = selectMaxStreamUrl(apiLinks);
+                            if (res && res.url) {
+                                console.log('[Anivox-MPV] Selected MAX quality stream from apiLinks:', res.quality, ':', res.url);
+                                return { url: res.url, time: 0, quality: res.quality };
+                            }
+                        }
+
+                        // 2. Direct inspection of Vue 3 component state (.player-container)
                         const playerEls = [
                             document.querySelector('.player-container'),
                             document.querySelector('video.video-element'),
@@ -254,58 +299,53 @@ pub fn run() {
                             if (comp) {
                                 const ctx = comp.ctx || comp.proxy || comp.setupState;
                                 if (ctx) {
+                                    if (ctx.links && typeof ctx.links === 'object') {
+                                        const res = selectMaxStreamUrl(ctx.links);
+                                        if (res && res.url) {
+                                            console.log('[Anivox-MPV] Selected MAX quality stream from Vue ctx.links:', res.quality, ':', res.url);
+                                            return { url: res.url, time: ctx.currentTime || 0, quality: res.quality };
+                                        }
+                                    }
                                     if (ctx.videoSrc && typeof ctx.videoSrc === 'string' && !ctx.videoSrc.startsWith('blob:')) {
                                         console.log('[Anivox-MPV] Found stream in Vue ctx.videoSrc:', ctx.videoSrc);
-                                        return { url: resolveUrl(ctx.videoSrc), time: ctx.currentTime || 0 };
-                                    }
-                                    if (ctx.links && typeof ctx.links === 'object') {
-                                        const q = ctx.quality || Object.keys(ctx.links)[0];
-                                        const u = ctx.links[q] || Object.values(ctx.links)[0];
-                                        if (u && typeof u === 'string' && !u.startsWith('blob:')) {
-                                            console.log('[Anivox-MPV] Found stream in Vue ctx.links:', u);
-                                            return { url: resolveUrl(u), time: ctx.currentTime || 0 };
-                                        }
+                                        return { url: resolveUrl(ctx.videoSrc), time: ctx.currentTime || 0, quality: 'MAX' };
                                     }
                                     if (ctx.hls && ctx.hls.url) {
                                         console.log('[Anivox-MPV] Found stream in Vue ctx.hls.url:', ctx.hls.url);
-                                        return { url: resolveUrl(ctx.hls.url), time: ctx.currentTime || 0 };
+                                        return { url: resolveUrl(ctx.hls.url), time: ctx.currentTime || 0, quality: 'MAX' };
                                     }
                                 }
                             }
                         }
 
-                        // 2. Captured API links from episodes endpoint
-                        if (apiLinks && typeof apiLinks === 'object') {
-                            const q = Object.keys(apiLinks)[0];
-                            const u = apiLinks[q] || Object.values(apiLinks)[0];
-                            if (u && typeof u === 'string') {
-                                console.log('[Anivox-MPV] Found stream in apiLinks:', u);
-                                return { url: resolveUrl(u), time: 0 };
-                            }
+                        // 3. Active HLS stream from network
+                        if (currentHlsUrl) {
+                            console.log('[Anivox-MPV] Fallback to currentHlsUrl:', currentHlsUrl);
+                            return { url: resolveUrl(currentHlsUrl), time: 0, quality: 'MAX' };
                         }
 
-                        // 3. Network intercepted stream URL (XHR / Fetch)
+                        // 4. Other network intercepted stream URL (XHR / Fetch)
                         if (lastStreamUrl && typeof lastStreamUrl === 'string' && !lastStreamUrl.startsWith('blob:')) {
-                            console.log('[Anivox-MPV] Found stream in lastStreamUrl:', lastStreamUrl);
-                            return { url: resolveUrl(lastStreamUrl), time: 0 };
+                            console.log('[Anivox-MPV] Fallback to lastStreamUrl:', lastStreamUrl);
+                            return { url: resolveUrl(lastStreamUrl), time: 0, quality: 'MAX' };
                         }
 
-                        // 4. HTML5 video tag currentSrc / src
+                        // 5. HTML5 video tag currentSrc / src
                         const video = document.querySelector('video');
                         if (video) {
                             if (video.currentSrc && !video.currentSrc.startsWith('blob:')) {
-                                return { url: resolveUrl(video.currentSrc), time: video.currentTime || 0 };
+                                return { url: resolveUrl(video.currentSrc), time: video.currentTime || 0, quality: 'MAX' };
                             }
                             if (video.src && !video.src.startsWith('blob:')) {
-                                return { url: resolveUrl(video.src), time: video.currentTime || 0 };
+                                return { url: resolveUrl(video.src), time: video.currentTime || 0, quality: 'MAX' };
                             }
                         }
 
-                        // 5. Fallback iframe player (Kodik / Sibnet etc.)
+                        // 6. Fallback iframe player (Kodik / Sibnet etc.)
                         const iframe = document.querySelector('iframe');
                         if (iframe && iframe.src && iframe.src.startsWith('http')) {
                             console.log('[Anivox-MPV] Found stream in fallback iframe:', iframe.src);
-                            return { url: iframe.src, time: 0 };
+                            return { url: iframe.src, time: 0, quality: 'iframe' };
                         }
 
                         return null;
@@ -327,7 +367,8 @@ pub fn run() {
                             video.pause();
                         }
 
-                        setBtnStatus('▶ Запуск MPV...', '#69f0ae', 0);
+                        const qLabel = info.quality && info.quality !== 'auto' ? ` (${info.quality})` : ' (MAX)';
+                        setBtnStatus(`▶ Запуск MPV${qLabel}...`, '#69f0ae', 0);
 
                         let title = document.title || 'Anivox';
                         title = title.replace(/ — Anivox| - Anivox| \| Anivox/gi, '').trim();
@@ -342,7 +383,7 @@ pub fn run() {
                                     subUrl: lastSubUrl || null,
                                     token: token
                                 });
-                                setBtnStatus('✔ Запущен!', '#69f0ae', 2500);
+                                setBtnStatus(`✔ Запущен${qLabel}!`, '#69f0ae', 2500);
                             } else {
                                 throw new Error('Tauri API недоступен');
                             }

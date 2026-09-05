@@ -41,7 +41,7 @@ This project is a desktop application wrapper for the website `https://anivox.fu
 3. **External MPV Player Integration:**
    - Intercepts HLS (`.m3u8`), direct MP4, and ASS subtitle URLs via global network hook.
    - Invoked via `open_in_mpv` IPC command, "▶ MPV" topbar button, or hotkey `M` / `Ь`.
-   - Automatically pauses web player, synchronizes current playback time (`--start=...`), passes headers (`Referer`, `Authorization`), and routes through WireGuard SOCKS5 proxy if VPN is active.
+   - Automatically pauses web player, synchronizes current playback time (`--start=...`), detects active quality (1080p, 720p, 480p, 360p), passes headers (`Referer`, `Authorization`), and routes through WireGuard SOCKS5/HTTP proxy if VPN is active.
 4. **Discord Rich Presence:**
    - Managed via `DiscordState` and the `discord-rich-presence` crate (App ID `1504862803335315609`).
    - Injected script observes document title mutations and invokes `set_discord_rpc`.
