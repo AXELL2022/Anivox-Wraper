@@ -33,15 +33,14 @@ This project is a desktop application wrapper for the website `https://anivox.fu
 1. **Remote Navigation & UI Injection (`src-tauri/src/lib.rs`):**
    - The webview loads `tauri::WebviewUrl::External("https://anivox.fun/".parse().unwrap())`.
    - A custom topbar (`#tauri-header`) is injected with Back, Forward, Reload buttons, a WireGuard VPN toggle, and an MPV launch button.
-2. **Isolated In-App WireGuard VPN Toggle (`ANIVOX-UA-48`):**
-   - Implemented via high-speed userspace WireGuard SOCKS5 engine (`SmartProxy` in `src-tauri/src/proxy.rs` using embedded `wireproxy.exe`).
-   - Runs on local port (e.g. `127.0.0.1:10808`), attached to the webview via `.proxy_url()`.
-   - **Zero system impact**: No network interfaces, no routes/DNS changes, other apps (Discord, Telegram, Steam) never touch the VPN.
-   - Controlled via `get_vpn_status` and `toggle_vpn` IPC commands (atomic boolean in memory).
+2. **System WireGuard VPN Integration (`ANIVOX-UA-48.conf`):**
+   - When the VPN toggle is OFF (default state at launch): traffic goes 100% through native system network settings (no proxy, no host modifications, no application interception).
+   - When the VPN toggle is turned ON: activates only the WireGuard VPN tunnel directly from `ANIVOX-UA-48.conf` (`wireguard.exe /installtunnelservice` on Windows, `nmcli` / `wg-quick` on Linux).
+   - Controlled via `get_vpn_status` and `toggle_vpn` IPC commands.
 3. **External MPV Player Integration:**
    - Intercepts HLS (`.m3u8`), direct MP4, and ASS subtitle URLs via global network hook.
    - Invoked via `open_in_mpv` IPC command, "▶ MPV" topbar button, or hotkey `M` / `Ь`.
-   - Automatically pauses web player, synchronizes current playback time (`--start=...`), detects active quality (1080p, 720p, 480p, 360p), passes headers (`Referer`, `Authorization`), and routes through WireGuard SOCKS5/HTTP proxy if VPN is active.
+   - Automatically pauses web player, synchronizes current playback time (`--start=...`), detects active quality (1080p, 720p, 480p, 360p), and passes headers (`Referer`, `Authorization`).
 4. **Discord Rich Presence:**
    - Managed via `DiscordState` and the `discord-rich-presence` crate (App ID `1504862803335315609`).
    - Injected script observes document title mutations and invokes `set_discord_rpc`.

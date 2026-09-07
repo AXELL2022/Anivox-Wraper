@@ -49,7 +49,7 @@
 * Architecture: Embedded userspace WireGuard SOCKS5 engine (`SmartProxy`) powered by native `wireproxy` (`wireguard-go`), embedded directly into the binary via `include_bytes!`.
 * Window Binding: Attached via Tauri's `.proxy_url("socks5://127.0.0.1:10808")`.
 * IPC Commands: `get_vpn_status()` and `toggle_vpn(enable: Option<bool>)` (instantaneous atomic switch).
-* Default State: VPN is enabled by default on launch (`is_vpn_enabled = true`).
+* Default State: VPN is disabled by default on launch (`is_vpn_enabled = false`).
 * Performance: Native gigabit throughput with multi-connection parallel streaming (0.3–0.4s per asset), `TCP_NODELAY` enabled on sockets.
 * Video Mode: Injected CSS automatically hides `#tauri-header` when watching anime full-screen (`:fullscreen` / `:-webkit-full-screen`).
 * **System Isolation:** Completely process-isolated. Does NOT create system network adapters, does NOT call `nmcli`, does NOT alter system routes or DNS. Other applications (Discord, Telegram, Steam, browsers) remain on normal home internet without interruption.

@@ -1,33 +1,244 @@
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::process::Command;
+use std::sync::Mutex;
 use tauri::{Manager, State};
-
-pub mod proxy;
-use proxy::SmartProxy;
 
 // State to hold the Discord IPC client
 pub struct DiscordState(pub Mutex<Option<DiscordIpcClient>>);
 
-// State to hold in-app VPN routing switch
-pub struct VpnState(pub Arc<AtomicBool>);
-
+const VPN_CONN_NAME: &str = "ANIVOX-UA-48";
 const VPN_CONFIG: &str = include_str!("../../ANIVOX-UA-48.conf");
 
-#[tauri::command]
-fn get_vpn_status(state: State<'_, VpnState>) -> Result<bool, String> {
-    Ok(state.0.load(Ordering::SeqCst))
+fn ensure_config_file() -> Result<std::path::PathBuf, String> {
+    let temp_path = std::env::temp_dir().join("ANIVOX-UA-48.conf");
+    std::fs::write(&temp_path, VPN_CONFIG).map_err(|e| format!("Failed to write config: {}", e))?;
+    Ok(temp_path)
+}
+
+fn is_vpn_active() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if std::path::Path::new(&format!("/sys/class/net/{}", VPN_CONN_NAME)).exists() {
+            return true;
+        }
+        if let Ok(output) = Command::new("nmcli")
+            .args(["-t", "-f", "NAME", "connection", "show", "--active"])
+            .output()
+        {
+            if output.status.success() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                for line in stdout.lines() {
+                    if line.trim() == VPN_CONN_NAME {
+                        return true;
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let service_name = format!("WireGuardTunnel${}", VPN_CONN_NAME);
+        let mut cmd = Command::new("sc.exe");
+        cmd.args(["query", &service_name]);
+        cmd.creation_flags(0x08000000);
+        if let Ok(output) = cmd.output() {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if stdout.contains("RUNNING") {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        false
+    }
+}
+
+fn connect_vpn() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        if Command::new("nmcli").arg("--version").output().is_ok() {
+            let conn_exists = Command::new("nmcli")
+                .args(["-t", "-f", "NAME", "connection", "show"])
+                .output()
+                .map(|out| {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    stdout.lines().any(|l| l.trim() == VPN_CONN_NAME)
+                })
+                .unwrap_or(false);
+
+            if !conn_exists {
+                let conf_path = ensure_config_file()?;
+                let _ = Command::new("nmcli")
+                    .args(["connection", "import", "type", "wireguard", "file"])
+                    .arg(&conf_path)
+                    .output();
+            }
+
+            let up_res = Command::new("nmcli")
+                .args(["connection", "up", VPN_CONN_NAME])
+                .output()
+                .map_err(|e| format!("Failed to run nmcli up: {}", e))?;
+
+            if !up_res.status.success() {
+                let err = String::from_utf8_lossy(&up_res.stderr);
+                return Err(format!("nmcli up failed: {}", err.trim()));
+            }
+            return Ok(());
+        }
+
+        let conf_path = ensure_config_file()?;
+        let res = Command::new("wg-quick")
+            .arg("up")
+            .arg(&conf_path)
+            .output()
+            .map_err(|e| format!("wg-quick up failed: {}", e))?;
+
+        if !res.status.success() {
+            let err = String::from_utf8_lossy(&res.stderr);
+            return Err(format!("wg-quick up failed: {}", err.trim()));
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let conf_path = ensure_config_file()?;
+        let wireguard_path = if std::path::Path::new(r"C:\Program Files\WireGuard\wireguard.exe").exists() {
+            r"C:\Program Files\WireGuard\wireguard.exe".to_string()
+        } else {
+            "wireguard.exe".to_string()
+        };
+
+        let mut cmd = Command::new(&wireguard_path);
+        cmd.arg("/installtunnelservice");
+        cmd.arg(&conf_path);
+        cmd.creation_flags(0x08000000);
+
+        let res = cmd.output()
+            .map_err(|e| format!("Failed to start WireGuard on Windows: {}", e))?;
+
+        if !res.status.success() {
+            let err = String::from_utf8_lossy(&res.stderr);
+            return Err(format!("wireguard.exe failed: {}", err.trim()));
+        }
+
+        // Wait up to 3 seconds for the service to become RUNNING
+        for _ in 0..15 {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            if is_vpn_active() {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        Err("Unsupported OS for WireGuard VPN".to_string())
+    }
+}
+
+fn disconnect_vpn() -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        if Command::new("nmcli").arg("--version").output().is_ok() {
+            let down_res = Command::new("nmcli")
+                .args(["connection", "down", VPN_CONN_NAME])
+                .output()
+                .map_err(|e| format!("Failed to run nmcli down: {}", e))?;
+
+            if !down_res.status.success() {
+                let err = String::from_utf8_lossy(&down_res.stderr);
+                return Err(format!("nmcli down failed: {}", err.trim()));
+            }
+            return Ok(());
+        }
+
+        let conf_path = ensure_config_file()?;
+        let res = Command::new("wg-quick")
+            .arg("down")
+            .arg(&conf_path)
+            .output()
+            .map_err(|e| format!("wg-quick down failed: {}", e))?;
+
+        if !res.status.success() {
+            let err = String::from_utf8_lossy(&res.stderr);
+            return Err(format!("wg-quick down failed: {}", err.trim()));
+        }
+        Ok(())
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        let wireguard_path = if std::path::Path::new(r"C:\Program Files\WireGuard\wireguard.exe").exists() {
+            r"C:\Program Files\WireGuard\wireguard.exe".to_string()
+        } else {
+            "wireguard.exe".to_string()
+        };
+
+        let mut cmd = Command::new(&wireguard_path);
+        cmd.arg("/uninstalltunnelservice");
+        cmd.arg(VPN_CONN_NAME);
+        cmd.creation_flags(0x08000000);
+
+        let res = cmd.output()
+            .map_err(|e| format!("Failed to stop WireGuard on Windows: {}", e))?;
+
+        if !res.status.success() {
+            let err = String::from_utf8_lossy(&res.stderr);
+            return Err(format!("wireguard.exe down failed: {}", err.trim()));
+        }
+
+        // Wait for service to stop
+        for _ in 0..15 {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            if !is_vpn_active() {
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+    {
+        Err("Unsupported OS for WireGuard VPN".to_string())
+    }
 }
 
 #[tauri::command]
-fn toggle_vpn(state: State<'_, VpnState>, enable: Option<bool>) -> Result<bool, String> {
-    let current = state.0.load(Ordering::SeqCst);
+fn get_vpn_status() -> Result<bool, String> {
+    Ok(is_vpn_active())
+}
+
+#[tauri::command]
+fn toggle_vpn(enable: Option<bool>) -> Result<bool, String> {
+    let current = is_vpn_active();
     let target = match enable {
         Some(val) => val,
         None => !current,
     };
-    state.0.store(target, Ordering::SeqCst);
-    Ok(target)
+
+    if target == current {
+        return Ok(current);
+    }
+
+    if target {
+        connect_vpn()?;
+    } else {
+        disconnect_vpn()?;
+    }
+
+    Ok(is_vpn_active())
 }
 
 #[tauri::command]
@@ -68,7 +279,6 @@ fn set_discord_rpc(
 
 #[tauri::command]
 fn open_in_mpv(
-    state: State<'_, VpnState>,
     url: String,
     title: Option<String>,
     start_time: Option<f64>,
@@ -124,12 +334,6 @@ fn open_in_mpv(
     cmd.arg("--ytdl-format=bestvideo+bestaudio/best");
     cmd.arg(r"--log-file=F:\Mpv\mpv_debug.log");
 
-    // Route through WireGuard HTTP proxy (supported natively by FFmpeg & MPV) if VPN is active
-    if state.0.load(Ordering::SeqCst) {
-        cmd.arg("--http-proxy=http://127.0.0.1:10807");
-        cmd.arg("--ytdl-raw-options=proxy=[http://127.0.0.1:10807]");
-    }
-
     match cmd.spawn() {
         Ok(child) => {
             println!("[MPV] Successfully started MPV (PID: {})", child.id());
@@ -149,6 +353,8 @@ pub fn run() {
         .manage(DiscordState(Mutex::new(None)))
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
+            // All traffic goes completely through system network settings (system DNS, routes, etc.)
+            // Optional host mapping if ever needed: --host-rules="MAP anivox.fun 45.95.96.255"
             let browser_args = "--use-angle=d3d11 --enable-features=NvidiaVpSuperResolution,NvidiaVpTrueHDR,DirectCompositionVideoOverlays,DirectCompositionLetterboxVideoOptimization,DirectCompositionScalableVideoProcessing,DirectCompositionUseNV12DecodeSwapChain,UseD3D11VideoProcessor,D3D11VideoDecoder,HardwareAcceleratedVideoDecode,AllowDcompOverlaysInBackbuffer --disable-features=msEdgeVideoSuperResolution,msWebOOUI,msPdfOOUI,msSmartScreenProtection --enable-nv12-dxgi-video --ignore-gpu-blocklist --enable-gpu-rasterization --force-high-performance-gpu";
             let script = r#"
                 (function() {
@@ -482,7 +688,7 @@ pub fn run() {
                             user-select: none;
                             -webkit-user-select: none;
                         `;
-                        vpnContainer.title = 'WireGuard VPN: Проверка статуса...';
+                        vpnContainer.title = 'WireGuard VPN: Отключен — Нажмите для подключения';
                         vpnContainer.onmouseenter = () => { vpnContainer.style.background = '#222'; };
                         vpnContainer.onmouseleave = () => { vpnContainer.style.background = 'transparent'; };
 
@@ -574,7 +780,7 @@ pub fn run() {
 
                         // VPN Reactive State
                         let isVpnPending = false;
-                        let isVpnOn = true;
+                        let isVpnOn = false;
 
                         function renderVpnState(active, pending) {
                             isVpnOn = !!active;
@@ -596,14 +802,14 @@ pub fn run() {
                                 switchKnob.style.transform = 'translateX(12px)';
                                 switchKnob.style.background = '#ffffff';
                                 vpnLabel.style.color = '#10b981';
-                                vpnContainer.title = 'WireGuard VPN: Включен (изолирован для Anivox) — Нажмите для прямого соединения';
+                                vpnContainer.title = 'WireGuard VPN: Подключен (ANIVOX-UA-48) — Нажмите для отключения';
                             } else {
                                 switchTrack.style.background = '#2a2a2a';
                                 switchTrack.style.borderColor = '#444';
                                 switchKnob.style.transform = 'translateX(0px)';
                                 switchKnob.style.background = '#888';
                                 vpnLabel.style.color = '#888';
-                                vpnContainer.title = 'WireGuard VPN: Отключен (прямое соединение) — Нажмите для включения VPN';
+                                vpnContainer.title = 'WireGuard VPN: Отключен — Нажмите для подключения';
                             }
                         }
 
@@ -629,7 +835,7 @@ pub fn run() {
                                 location.reload();
                             } catch (err) {
                                 console.error('Failed to toggle VPN:', err);
-                                alert('Ошибка переключения VPN: ' + err);
+                                alert('Ошибка переключения WireGuard: ' + err);
                                 await syncVpnStatus();
                             }
                         };
@@ -669,33 +875,23 @@ pub fn run() {
                 })();
             "#;
 
-            let proxy = tauri::async_runtime::block_on(async {
-                SmartProxy::start(VPN_CONFIG).await
-            }).map_err(|e| format!("Failed to start SmartProxy: {}", e))?;
+            // Ensure WireGuard VPN is OFF by default on app launch
+            if is_vpn_active() {
+                let _ = disconnect_vpn();
+            }
 
-            let proxy_url_str = format!("socks5://127.0.0.1:{}", proxy.port);
-            let full_browser_args = format!(
-                "{} --proxy-server=socks5://127.0.0.1:{} --host-resolver-rules=\"MAP * ~NOTFOUND , EXCLUDE 127.0.0.1\"",
-                browser_args,
-                proxy.port
-            );
-            std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", &full_browser_args);
-
-            let vpn_state = VpnState(Arc::clone(&proxy.is_vpn_enabled));
-            app.manage(vpn_state);
-            app.manage(proxy);
+            std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", browser_args);
 
             let _window = tauri::WebviewWindowBuilder::new(
                 app,
                 "main",
                 tauri::WebviewUrl::External("https://anivox.fun/".parse().unwrap()),
             )
-            .proxy_url(url::Url::parse(&proxy_url_str).expect("Valid proxy URL"))
             .title("Anivox")
             .inner_size(1280.0, 720.0)
             .initialization_script(script)
             // Optimized GPU, Video and RTX Video Super Resolution (VSR) settings
-            .additional_browser_args(&full_browser_args)
+            .additional_browser_args(browser_args)
             .build()?;
 
             let handle = app.handle().clone();
@@ -718,6 +914,15 @@ pub fn run() {
                 }
             });
             Ok(())
+        })
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Destroyed => {
+                if is_vpn_active() {
+                    let _ = disconnect_vpn();
+                }
+                window.app_handle().exit(0);
+            }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             set_discord_rpc,
