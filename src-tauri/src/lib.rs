@@ -1,7 +1,95 @@
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 use std::process::Command;
 use std::sync::Mutex;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
+
+const TOOLBAR_HEIGHT: f64 = 40.0;
+
+struct BrowserState {
+    url: Mutex<tauri::Url>,
+    fullscreen: std::sync::atomic::AtomicBool,
+}
+
+fn layout_webviews(window: &tauri::Window) -> tauri::Result<()> {
+    let size = window
+        .inner_size()?
+        .to_logical::<f64>(window.scale_factor()?);
+    let fullscreen = window
+        .state::<BrowserState>()
+        .fullscreen
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let top = if fullscreen { 0.0 } else { TOOLBAR_HEIGHT };
+    if let Some(toolbar) = window.get_webview("toolbar") {
+        toolbar.set_bounds(tauri::Rect {
+            position: tauri::LogicalPosition::new(0.0, 0.0).into(),
+            size: tauri::LogicalSize::new(size.width, TOOLBAR_HEIGHT).into(),
+        })?;
+        if fullscreen {
+            toolbar.hide()?;
+        } else {
+            toolbar.show()?;
+        }
+    }
+    if let Some(content) = window.get_webview("content") {
+        content.set_bounds(tauri::Rect {
+            position: tauri::LogicalPosition::new(0.0, top).into(),
+            size: tauri::LogicalSize::new(size.width, (size.height - top).max(1.0)).into(),
+        })?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn content_fullscreen(window: tauri::Window, fullscreen: bool) -> Result<(), String> {
+    window
+        .state::<BrowserState>()
+        .fullscreen
+        .store(fullscreen, std::sync::atomic::Ordering::Relaxed);
+    layout_webviews(&window).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn report_player_status(
+    app: tauri::AppHandle,
+    text: String,
+    color: String,
+    reset_after_ms: u64,
+) -> Result<(), String> {
+    app.emit_to(
+        "toolbar",
+        "player-status",
+        serde_json::json!({
+            "text": text, "color": color, "resetAfterMs": reset_after_ms
+        }),
+    )
+    .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+async fn browser_action(app: tauri::AppHandle, action: String) -> Result<(), String> {
+    let content = app.get_webview("content").ok_or("Окно сайта недоступно")?;
+    let result = match action.as_str() {
+        "back" => content.eval("window.history.back()"),
+        "forward" => content.eval("window.history.forward()"),
+        "reload" => {
+            let last_url = app
+                .state::<BrowserState>()
+                .url
+                .lock()
+                .map_err(|err| err.to_string())?
+                .clone();
+            let url = content
+                .url()
+                .ok()
+                .filter(|url| matches!(url.scheme(), "https" | "http"))
+                .unwrap_or(last_url);
+            content.navigate(url)
+        }
+        "mpv" => content.eval("window.__anivoxLaunchMpv?.()"),
+        _ => return Err("Неизвестное действие панели".into()),
+    };
+    result.map_err(|err| err.to_string())
+}
 
 // State to hold the Discord IPC client
 pub struct DiscordState(pub Mutex<Option<DiscordIpcClient>>);
@@ -59,6 +147,68 @@ fn is_vpn_active() -> bool {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn run_wireguard(argument: &str, value: &str, allow_elevation: bool) -> Result<(), String> {
+    use std::os::windows::process::CommandExt;
+
+    let executable = r"C:\Program Files\WireGuard\wireguard.exe";
+    let executable = if std::path::Path::new(executable).exists() {
+        executable
+    } else {
+        "wireguard.exe"
+    };
+    let output = Command::new(executable)
+        .args([argument, value])
+        .creation_flags(0x08000000)
+        .output()
+        .map_err(|err| format!("Не удалось запустить WireGuard: {err}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let error = String::from_utf8_lossy(&output.stderr);
+    let lower = error.to_lowercase();
+    let access_denied = output.status.code() == Some(5)
+        || lower.contains("access is denied")
+        || lower.contains("access denied")
+        || lower.contains("отказано в доступе")
+        || lower.contains("доступ запрещен");
+    if !access_denied || !allow_elevation {
+        return Err(format!("WireGuard: {}", error.trim()));
+    }
+
+    // Only the WireGuard operation is elevated. No remote content runs as administrator.
+    // Escape PowerShell literals; quote the config path separately for Windows argv parsing.
+    let executable = executable.replace('\'', "''");
+    let arguments = format!("{} \"{}\"", argument, value).replace('\'', "''");
+    let script = format!(
+        "$ErrorActionPreference = 'Stop'; try {{ \
+         $p = Start-Process -FilePath '{executable}' -ArgumentList '{arguments}' \
+         -Verb RunAs -Wait -PassThru; exit $p.ExitCode \
+         }} catch {{ \
+         $e = $_.Exception; while ($e.InnerException) {{ $e = $e.InnerException }}; \
+         if ($e.NativeErrorCode -eq 1223) {{ exit 1223 }}; \
+         [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}"
+    );
+    let elevated = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+        .creation_flags(0x08000000)
+        .output()
+        .map_err(|err| format!("Не удалось запросить права администратора: {err}"))?;
+    match elevated.status.code() {
+        Some(0) => Ok(()),
+        Some(1223) => Err(
+            "Запрос прав администратора отменён. Для переключения VPN подтвердите запрос Windows."
+                .into(),
+        ),
+        _ => Err(format!(
+            "Не удалось переключить WireGuard с правами администратора (код {:?}). {}",
+            elevated.status.code(),
+            String::from_utf8_lossy(&elevated.stderr).trim()
+        )),
+    }
+}
+
 fn connect_vpn() -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
@@ -108,36 +258,18 @@ fn connect_vpn() -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
         let conf_path = ensure_config_file()?;
-        let wireguard_path = if std::path::Path::new(r"C:\Program Files\WireGuard\wireguard.exe").exists() {
-            r"C:\Program Files\WireGuard\wireguard.exe".to_string()
-        } else {
-            "wireguard.exe".to_string()
-        };
-
-        let mut cmd = Command::new(&wireguard_path);
-        cmd.arg("/installtunnelservice");
-        cmd.arg(&conf_path);
-        cmd.creation_flags(0x08000000);
-
-        let res = cmd.output()
-            .map_err(|e| format!("Failed to start WireGuard on Windows: {}", e))?;
-
-        if !res.status.success() {
-            let err = String::from_utf8_lossy(&res.stderr);
-            return Err(format!("wireguard.exe failed: {}", err.trim()));
-        }
+        run_wireguard("/installtunnelservice", &conf_path.to_string_lossy(), true)?;
 
         // Wait up to 3 seconds for the service to become RUNNING
         for _ in 0..15 {
             std::thread::sleep(std::time::Duration::from_millis(200));
             if is_vpn_active() {
-                break;
+                return Ok(());
             }
         }
 
-        Ok(())
+        Err("Служба WireGuard не запустилась за отведённое время.".into())
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
@@ -146,7 +278,7 @@ fn connect_vpn() -> Result<(), String> {
     }
 }
 
-fn disconnect_vpn() -> Result<(), String> {
+fn disconnect_vpn(_allow_elevation: bool) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         if Command::new("nmcli").arg("--version").output().is_ok() {
@@ -178,35 +310,17 @@ fn disconnect_vpn() -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        use std::os::windows::process::CommandExt;
-        let wireguard_path = if std::path::Path::new(r"C:\Program Files\WireGuard\wireguard.exe").exists() {
-            r"C:\Program Files\WireGuard\wireguard.exe".to_string()
-        } else {
-            "wireguard.exe".to_string()
-        };
-
-        let mut cmd = Command::new(&wireguard_path);
-        cmd.arg("/uninstalltunnelservice");
-        cmd.arg(VPN_CONN_NAME);
-        cmd.creation_flags(0x08000000);
-
-        let res = cmd.output()
-            .map_err(|e| format!("Failed to stop WireGuard on Windows: {}", e))?;
-
-        if !res.status.success() {
-            let err = String::from_utf8_lossy(&res.stderr);
-            return Err(format!("wireguard.exe down failed: {}", err.trim()));
-        }
+        run_wireguard("/uninstalltunnelservice", VPN_CONN_NAME, _allow_elevation)?;
 
         // Wait for service to stop
         for _ in 0..15 {
             std::thread::sleep(std::time::Duration::from_millis(200));
             if !is_vpn_active() {
-                break;
+                return Ok(());
             }
         }
 
-        Ok(())
+        Err("Служба WireGuard не остановилась за отведённое время.".into())
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "windows")))]
@@ -216,12 +330,20 @@ fn disconnect_vpn() -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_vpn_status() -> Result<bool, String> {
-    Ok(is_vpn_active())
+async fn get_vpn_status() -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(is_vpn_active)
+        .await
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
-fn toggle_vpn(enable: Option<bool>) -> Result<bool, String> {
+async fn toggle_vpn(enable: Option<bool>) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || toggle_vpn_blocking(enable))
+        .await
+        .map_err(|err| err.to_string())?
+}
+
+fn toggle_vpn_blocking(enable: Option<bool>) -> Result<bool, String> {
     let current = is_vpn_active();
     let target = match enable {
         Some(val) => val,
@@ -235,7 +357,7 @@ fn toggle_vpn(enable: Option<bool>) -> Result<bool, String> {
     if target {
         connect_vpn()?;
     } else {
-        disconnect_vpn()?;
+        disconnect_vpn(true)?;
     }
 
     Ok(is_vpn_active())
@@ -350,6 +472,10 @@ fn open_in_mpv(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(BrowserState {
+            url: Mutex::new("https://anivox.fun/".parse().unwrap()),
+            fullscreen: std::sync::atomic::AtomicBool::new(false),
+        })
         .manage(DiscordState(Mutex::new(None)))
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
@@ -444,18 +570,11 @@ pub fn run() {
                         console.error('[Anivox-MPV] Failed to hook network:', e);
                     }
 
-                    // Only inject header, UI and hotkeys into the top-level window
-                    if (window !== window.top || !location.href.startsWith('https://anivox.fun')) return;
+                    // The local toolbar is separate; only player hooks belong in the site.
+                    if (window !== window.top || location.origin !== 'https://anivox.fun') return;
 
                     function setBtnStatus(text, color, resetAfterMs) {
-                        const btn = document.getElementById('tauri-mpv-btn');
-                        if (!btn) return;
-                        btn.innerHTML = `<span style="font-size: 11px; font-weight: 700; letter-spacing: 0.5px; color: ${color};">${text}</span>`;
-                        if (resetAfterMs) {
-                            setTimeout(() => {
-                                btn.innerHTML = '<span style="font-size: 11px; font-weight: 700; letter-spacing: 0.5px; color: #ffa9de;">▶ MPV</span>';
-                            }, resetAfterMs);
-                        }
+                        window.__TAURI__.core.invoke('report_player_status', { text, color, resetAfterMs }).catch(console.error);
                     }
 
                     function parseQualityHeight(q) {
@@ -599,6 +718,13 @@ pub fn run() {
                         }
                     }
 
+                    window.__anivoxLaunchMpv = launchInMpv;
+                    document.addEventListener('fullscreenchange', () => {
+                        window.__TAURI__.core.invoke('content_fullscreen', {
+                            fullscreen: !!document.fullscreenElement
+                        }).catch(console.error);
+                    });
+
                     window.addEventListener('keydown', (e) => {
                         const tag = document.activeElement ? document.activeElement.tagName : '';
                         if (tag === 'INPUT' || tag === 'TEXTAREA' || (document.activeElement && document.activeElement.isContentEditable)) {
@@ -610,153 +736,9 @@ pub fn run() {
                         }
                     });
 
-                    function setupHeader() {
-                        if (document.getElementById('tauri-header')) return;
-
-                        const header = document.createElement('div');
-                        header.id = 'tauri-header';
-                        header.style.cssText = `
-                            position: fixed;
-                            top: 0;
-                            left: 0;
-                            width: 100%;
-                            height: 32px;
-                            background: #111;
-                            color: white;
-                            display: flex;
-                            align-items: center;
-                            padding: 0 10px;
-                            z-index: 999999;
-                            border-bottom: 1px solid #333;
-                            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-                            user-select: none;
-                            -webkit-user-select: none;
-                            box-sizing: border-box;
-                        `;
-
-                        const btnStyle = `
-                            background: transparent;
-                            border: none;
-                            color: #ccc;
-                            width: 28px;
-                            height: 28px;
-                            display: flex;
-                            align-items: center;
-                            justify-content: center;
-                            cursor: pointer;
-                            font-size: 16px;
-                            border-radius: 4px;
-                            transition: background 0.15s, color 0.15s;
-                            margin-right: 4px;
-                        `;
-
-                        function createButton(html, onClick, title) {
-                            const btn = document.createElement('button');
-                            btn.innerHTML = html;
-                            btn.style.cssText = btnStyle;
-                            btn.title = title;
-                            btn.onclick = onClick;
-                            btn.onmouseenter = () => { btn.style.background = '#333'; btn.style.color = 'white'; };
-                            btn.onmouseleave = () => { btn.style.background = 'transparent'; btn.style.color = '#ccc'; };
-                            return btn;
-                        }
-
-                        const backBtn = createButton('&#10094;', () => window.history.back(), 'Назад');
-                        const forwardBtn = createButton('&#10095;', () => window.history.forward(), 'Вперед');
-                        const reloadBtn = createButton('&#8635;', () => window.location.reload(), 'Обновить');
-
-                        header.appendChild(backBtn);
-                        header.appendChild(forwardBtn);
-                        header.appendChild(reloadBtn);
-
-                        // Vertical divider
-                        const divider = document.createElement('div');
-                        divider.style.cssText = 'width: 1px; height: 16px; background: #333; margin: 0 6px;';
-                        header.appendChild(divider);
-
-                        // VPN Toggle component
-                        const vpnContainer = document.createElement('div');
-                        vpnContainer.id = 'tauri-vpn-container';
-                        vpnContainer.style.cssText = `
-                            display: flex;
-                            align-items: center;
-                            gap: 6px;
-                            cursor: pointer;
-                            padding: 2px 7px;
-                            border-radius: 6px;
-                            transition: background 0.15s;
-                            user-select: none;
-                            -webkit-user-select: none;
-                        `;
-                        vpnContainer.title = 'WireGuard VPN: Отключен — Нажмите для подключения';
-                        vpnContainer.onmouseenter = () => { vpnContainer.style.background = '#222'; };
-                        vpnContainer.onmouseleave = () => { vpnContainer.style.background = 'transparent'; };
-
-                        const vpnLabel = document.createElement('span');
-                        vpnLabel.innerText = 'VPN';
-                        vpnLabel.style.cssText = 'font-size: 11px; font-weight: 700; letter-spacing: 0.5px; color: #888; transition: color 0.2s;';
-
-                        const switchTrack = document.createElement('div');
-                        switchTrack.style.cssText = 'width: 28px; height: 16px; background: #2a2a2a; border-radius: 999px; position: relative; transition: background 0.2s, border-color 0.2s; border: 1px solid #444; box-sizing: border-box;';
-
-                        const switchKnob = document.createElement('div');
-                        switchKnob.style.cssText = 'width: 10px; height: 10px; background: #888; border-radius: 50%; position: absolute; top: 2px; left: 2px; transition: transform 0.2s ease, background 0.2s;';
-                        switchTrack.appendChild(switchKnob);
-
-                        vpnContainer.appendChild(vpnLabel);
-                        vpnContainer.appendChild(switchTrack);
-                        header.appendChild(vpnContainer);
-
-                        // Vertical divider
-                        const divider2 = document.createElement('div');
-                        divider2.style.cssText = 'width: 1px; height: 16px; background: #333; margin: 0 6px;';
-                        header.appendChild(divider2);
-
-                        // MPV launch button
-                        const mpvBtn = document.createElement('button');
-                        mpvBtn.id = 'tauri-mpv-btn';
-                        mpvBtn.innerHTML = '<span style="font-size: 11px; font-weight: 700; letter-spacing: 0.5px;">▶ MPV</span>';
-                        mpvBtn.title = 'Воспроизвести текущее видео в MPV (Горячая клавиша: M)';
-                        mpvBtn.style.cssText = `
-                            background: #1f1f23;
-                            border: 1px solid #38383f;
-                            color: #ffa9de;
-                            padding: 2px 8px;
-                            height: 22px;
-                            display: flex;
-                            align-items: center;
-                            justify-content: center;
-                            cursor: pointer;
-                            border-radius: 4px;
-                            transition: background 0.15s, color 0.15s, border-color 0.15s;
-                            user-select: none;
-                            -webkit-user-select: none;
-                        `;
-                        mpvBtn.onmouseenter = () => { mpvBtn.style.background = '#2d2d35'; mpvBtn.style.borderColor = '#ffa9de'; };
-                        mpvBtn.onmouseleave = () => { mpvBtn.style.background = '#1f1f23'; mpvBtn.style.borderColor = '#38383f'; };
-                        mpvBtn.onclick = launchInMpv;
-                        header.appendChild(mpvBtn);
-
-                        // Center title
-                        const title = document.createElement('div');
-                        title.innerText = 'Anivox';
-                        title.style.cssText = 'position: absolute; left: 50%; transform: translateX(-50%); font-size: 12px; color: #888; letter-spacing: 1.5px; text-transform: uppercase; font-weight: bold; pointer-events: none;';
-                        header.appendChild(title);
-
-                        document.body.appendChild(header);
-
-                        // Push content down
+                    function setupVideoStyles() {
                         const style = document.createElement('style');
                         style.textContent = `
-                            body { margin-top: 32px !important; }
-                            #tauri-header button:active { background: #444 !important; }
-                            #tauri-vpn-container:active { transform: scale(0.97); }
-                            #tauri-mpv-btn:active { transform: scale(0.96) !important; background: #383842 !important; }
-                            :fullscreen #tauri-header,
-                            :-webkit-full-screen #tauri-header { display: none !important; }
-                            :fullscreen body,
-                            :-webkit-full-screen body { margin-top: 0 !important; }
-
                             /* DirectComposition Video Overlay & NVIDIA RTX VSR Fixes */
                             .player-container, .player, [class*="player"], .video-element, video, iframe {
                                 border-radius: 0 !important;
@@ -778,76 +760,12 @@ pub fn run() {
                         `;
                         document.head.appendChild(style);
 
-                        // VPN Reactive State
-                        let isVpnPending = false;
-                        let isVpnOn = false;
-
-                        function renderVpnState(active, pending) {
-                            isVpnOn = !!active;
-                            isVpnPending = !!pending;
-
-                            if (isVpnPending) {
-                                vpnContainer.style.opacity = '0.5';
-                                vpnContainer.style.pointerEvents = 'none';
-                                vpnContainer.title = 'Переключение WireGuard VPN...';
-                                return;
-                            }
-
-                            vpnContainer.style.opacity = '1';
-                            vpnContainer.style.pointerEvents = 'auto';
-
-                            if (isVpnOn) {
-                                switchTrack.style.background = '#10b981';
-                                switchTrack.style.borderColor = '#059669';
-                                switchKnob.style.transform = 'translateX(12px)';
-                                switchKnob.style.background = '#ffffff';
-                                vpnLabel.style.color = '#10b981';
-                                vpnContainer.title = 'WireGuard VPN: Подключен (ANIVOX-UA-48) — Нажмите для отключения';
-                            } else {
-                                switchTrack.style.background = '#2a2a2a';
-                                switchTrack.style.borderColor = '#444';
-                                switchKnob.style.transform = 'translateX(0px)';
-                                switchKnob.style.background = '#888';
-                                vpnLabel.style.color = '#888';
-                                vpnContainer.title = 'WireGuard VPN: Отключен — Нажмите для подключения';
-                            }
-                        }
-
-                        async function syncVpnStatus() {
-                            if (isVpnPending) return;
-                            try {
-                                if (window.__TAURI__ && window.__TAURI__.core) {
-                                    const status = await window.__TAURI__.core.invoke('get_vpn_status');
-                                    renderVpnState(status, false);
-                                }
-                            } catch (e) {
-                                console.error('Failed to get VPN status:', e);
-                            }
-                        }
-
-                        vpnContainer.onclick = async () => {
-                            if (isVpnPending) return;
-                            const nextState = !isVpnOn;
-                            renderVpnState(nextState, true);
-                            try {
-                                const res = await window.__TAURI__.core.invoke('toggle_vpn', { enable: nextState });
-                                renderVpnState(res, false);
-                                location.reload();
-                            } catch (err) {
-                                console.error('Failed to toggle VPN:', err);
-                                alert('Ошибка переключения WireGuard: ' + err);
-                                await syncVpnStatus();
-                            }
-                        };
-
-                        syncVpnStatus();
-                        setInterval(syncVpnStatus, 10000);
                     }
 
                     if (document.readyState === 'loading') {
-                        document.addEventListener('DOMContentLoaded', setupHeader);
+                        document.addEventListener('DOMContentLoaded', setupVideoStyles);
                     } else {
-                        setupHeader();
+                        setupVideoStyles();
                     }
 
                     // Discord RPC logic with deduplication and debouncing
@@ -877,22 +795,48 @@ pub fn run() {
 
             // Ensure WireGuard VPN is OFF by default on app launch
             if is_vpn_active() {
-                let _ = disconnect_vpn();
+                let _ = disconnect_vpn(false);
             }
 
             std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", browser_args);
 
-            let _window = tauri::WebviewWindowBuilder::new(
-                app,
-                "main",
-                tauri::WebviewUrl::External("https://anivox.fun/".parse().unwrap()),
-            )
-            .title("Anivox")
-            .inner_size(1280.0, 720.0)
-            .initialization_script(script)
-            // Optimized GPU, Video and RTX Video Super Resolution (VSR) settings
-            .additional_browser_args(browser_args)
-            .build()?;
+            let window = tauri::window::WindowBuilder::new(app, "main")
+                .title("Anivox")
+                .inner_size(1280.0, 720.0)
+                .min_inner_size(420.0, 300.0)
+                .build()?;
+            window.add_child(
+                tauri::webview::WebviewBuilder::new("toolbar", tauri::WebviewUrl::App("index.html".into()))
+                    .additional_browser_args(browser_args),
+                tauri::LogicalPosition::new(0.0, 0.0),
+                tauri::LogicalSize::new(1280.0, TOOLBAR_HEIGHT),
+            )?;
+            let navigation_app = app.handle().clone();
+            window.add_child(
+                tauri::webview::WebviewBuilder::new(
+                    "content",
+                    tauri::WebviewUrl::External("https://anivox.fun/".parse().unwrap()),
+                )
+                .initialization_script(script)
+                .additional_browser_args(browser_args)
+                .on_navigation(move |url| {
+                    if !matches!(url.scheme(), "https" | "http") { return false; }
+                    if let Ok(mut last_url) = navigation_app.state::<BrowserState>().url.lock() {
+                        *last_url = url.clone();
+                    }
+                    true
+                })
+                .on_page_load(|webview, payload| {
+                    if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                        tauri::async_runtime::spawn(async move {
+                            let _ = content_fullscreen(webview.window(), false).await;
+                        });
+                    }
+                }),
+                tauri::LogicalPosition::new(0.0, TOOLBAR_HEIGHT),
+                tauri::LogicalSize::new(1280.0, 720.0 - TOOLBAR_HEIGHT),
+            )?;
+            layout_webviews(&window)?;
 
             let handle = app.handle().clone();
             // Initialize Discord RPC on startup
@@ -916,9 +860,15 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| match event {
+            tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                let window = window.clone();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let _ = layout_webviews(&window);
+                });
+            }
             tauri::WindowEvent::Destroyed => {
                 if is_vpn_active() {
-                    let _ = disconnect_vpn();
+                    let _ = disconnect_vpn(false);
                 }
                 window.app_handle().exit(0);
             }
@@ -928,6 +878,9 @@ pub fn run() {
             set_discord_rpc,
             get_vpn_status,
             toggle_vpn,
+            browser_action,
+            report_player_status,
+            content_fullscreen,
             open_in_mpv
         ])
         .run(tauri::generate_context!())

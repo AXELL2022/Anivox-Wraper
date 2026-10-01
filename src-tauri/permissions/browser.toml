@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-browser-controls"
+description = "Allows the local toolbar to control the content webview"
+commands.allow = ["browser_action"]
+
+[[permission]]
+identifier = "allow-player-status"
+description = "Allows the content webview to report MPV and fullscreen state"
+commands.allow = ["report_player_status", "content_fullscreen"]

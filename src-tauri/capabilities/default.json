@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Capability for the main window",
-  "windows": ["main"],
+  "webviews": ["content"],
   "remote": {
     "urls": ["https://anivox.fun/*"]
   },
@@ -10,7 +10,7 @@
     "core:default",
     "opener:default",
     "allow-set-discord-rpc",
-    "allow-vpn-commands",
+    "allow-player-status",
     "allow-mpv-commands"
   ]
 }

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Anivox — панель</title>
+  <link rel="stylesheet" href="toolbar.css">
+  <script src="toolbar.js" defer></script>
+</head>
+<body>
+  <nav aria-label="Управление Anivox">
+    <button data-action="back" class="icon" title="Назад" aria-label="Назад">‹</button>
+    <button data-action="forward" class="icon" title="Вперёд" aria-label="Вперёд">›</button>
+    <button data-action="reload" class="icon" title="Обновить сайт" aria-label="Обновить сайт">↻</button>
+    <span class="divider" aria-hidden="true"></span>
+    <button id="vpn" aria-pressed="false" disabled title="WireGuard VPN"><span class="dot"></span><span id="vpn-label">VPN · …</span></button>
+    <button id="mpv" title="Открыть текущее видео в MPV (M / Ь)">▶ MPV</button>
+    <span id="status" role="status" aria-live="polite"></span>
+    <span class="brand">ANIVOX</span>
+  </nav>
+</body>
+</html>

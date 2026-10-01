@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.yasin.anivox",
   "build": {
-    "frontendDist": "../src"
+    "frontendDist": "../ui"
   },
   "app": {
     "withGlobalTauri": true,
