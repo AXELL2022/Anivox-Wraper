@@ -11,6 +11,8 @@
     "opener:default",
     "allow-set-discord-rpc",
     "allow-player-status",
-    "allow-mpv-commands"
+    "allow-mpv-commands",
+    "allow-vpn-commands",
+    "allow-browser-controls"
   ]
 }

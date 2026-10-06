@@ -1,9 +1,10 @@
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
-const vpn = document.querySelector('#vpn');
-const vpnLabel = document.querySelector('#vpn-label');
-const mpv = document.querySelector('#mpv');
-const status = document.querySelector('#status');
+const toolbarRoot = document.querySelector('#anivox-toolbar-host')?.shadowRoot ?? document;
+const vpn = toolbarRoot.querySelector('#vpn');
+const vpnLabel = toolbarRoot.querySelector('#vpn-label');
+const mpv = toolbarRoot.querySelector('#mpv');
+const status = toolbarRoot.querySelector('#status');
 let vpnActive = false;
 let vpnPending = false;
 let mpvTimer;
@@ -41,7 +42,7 @@ async function action(action) {
   }
 }
 
-document.querySelectorAll('[data-action]').forEach(button => {
+toolbarRoot.querySelectorAll('[data-action]').forEach(button => {
   button.addEventListener('click', () => action(button.dataset.action));
 });
 

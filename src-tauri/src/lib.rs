@@ -3,21 +3,100 @@ use std::process::Command;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
 
+#[cfg(not(target_os = "linux"))]
 const TOOLBAR_HEIGHT: f64 = 40.0;
+
+#[cfg(target_os = "windows")]
+const BROWSER_ARGS: &str = "--use-angle=d3d11 --enable-features=NvidiaVpSuperResolution,NvidiaVpTrueHDR,DirectCompositionVideoOverlays,DirectCompositionLetterboxVideoOptimization,DirectCompositionScalableVideoProcessing,DirectCompositionUseNV12DecodeSwapChain,UseD3D11VideoProcessor,D3D11VideoDecoder,HardwareAcceleratedVideoDecode,AllowDcompOverlaysInBackbuffer --disable-features=msEdgeVideoSuperResolution,msWebOOUI,msPdfOOUI,msSmartScreenProtection --enable-nv12-dxgi-video --ignore-gpu-blocklist --enable-gpu-rasterization --force-high-performance-gpu";
+
+#[cfg(not(target_os = "linux"))]
+fn browser_args_for_platform() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        BROWSER_ARGS
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        ""
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn add_linux_toolbar_script(script: &str) -> String {
+    let markup = serde_json::to_string(include_str!("../../ui/toolbar-fragment.html"))
+        .expect("toolbar HTML must serialize");
+    let styles = serde_json::to_string(include_str!("../../ui/toolbar-overlay.css"))
+        .expect("toolbar CSS must serialize");
+    let toolbar_script = include_str!("../../ui/toolbar.js");
+
+    let mut result = String::with_capacity(
+        script.len() + markup.len() + styles.len() + toolbar_script.len() + 900,
+    );
+    result.push_str(script);
+    result.push_str(
+        r#"
+        ;(() => {
+            const installToolbar = () => {
+                if (document.getElementById('anivox-toolbar-host')) return;
+                const spacer = document.createElement('div');
+                spacer.id = 'anivox-toolbar-spacer';
+                spacer.style.height = '40px';
+                spacer.setAttribute('aria-hidden', 'true');
+                document.documentElement.insertBefore(spacer, document.body);
+                const host = document.createElement('div');
+                host.id = 'anivox-toolbar-host';
+                const root = host.attachShadow({ mode: 'open' });
+                const style = document.createElement('style');
+                style.textContent = "#,
+    );
+    result.push_str(&styles);
+    result.push_str(
+        r#";
+                root.appendChild(style);
+                root.innerHTML += "#,
+    );
+    result.push_str(&markup);
+    result.push_str(
+        r#";
+                document.documentElement.appendChild(host);
+                "#,
+    );
+    result.push_str(toolbar_script);
+    result.push_str(
+        r#"
+            };
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', installToolbar, { once: true });
+            } else {
+                installToolbar();
+            }
+        })();
+        "#,
+    );
+    result
+}
 
 struct BrowserState {
     url: Mutex<tauri::Url>,
     fullscreen: std::sync::atomic::AtomicBool,
 }
 
+#[cfg(target_os = "linux")]
+fn layout_webviews(_window: &tauri::Window) -> tauri::Result<()> {
+    // Linux uses one webview with an injected toolbar; it fills the window itself.
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
 fn layout_webviews(window: &tauri::Window) -> tauri::Result<()> {
     let size = window
         .inner_size()?
         .to_logical::<f64>(window.scale_factor()?);
-    let fullscreen = window
-        .state::<BrowserState>()
-        .fullscreen
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let fullscreen = cfg!(target_os = "windows")
+        && window
+            .state::<BrowserState>()
+            .fullscreen
+            .load(std::sync::atomic::Ordering::Relaxed);
     let top = if fullscreen { 0.0 } else { TOOLBAR_HEIGHT };
     if let Some(toolbar) = window.get_webview("toolbar") {
         toolbar.set_bounds(tauri::Rect {
@@ -55,8 +134,12 @@ fn report_player_status(
     color: String,
     reset_after_ms: u64,
 ) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let target = "content";
+    #[cfg(not(target_os = "linux"))]
+    let target = "toolbar";
     app.emit_to(
-        "toolbar",
+        target,
         "player-status",
         serde_json::json!({
             "text": text, "color": color, "resetAfterMs": reset_after_ms
@@ -66,7 +149,12 @@ fn report_player_status(
 }
 
 #[tauri::command]
-async fn browser_action(app: tauri::AppHandle, action: String) -> Result<(), String> {
+async fn browser_action(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+    action: String,
+) -> Result<(), String> {
+    ensure_toolbar_access(&webview)?;
     let content = app.get_webview("content").ok_or("Окно сайта недоступно")?;
     let result = match action.as_str() {
         "back" => content.eval("window.history.back()"),
@@ -337,7 +425,8 @@ async fn get_vpn_status() -> Result<bool, String> {
 }
 
 #[tauri::command]
-async fn toggle_vpn(enable: Option<bool>) -> Result<bool, String> {
+async fn toggle_vpn(webview: tauri::Webview, enable: Option<bool>) -> Result<bool, String> {
+    ensure_toolbar_access(&webview)?;
     tauri::async_runtime::spawn_blocking(move || toggle_vpn_blocking(enable))
         .await
         .map_err(|err| err.to_string())?
@@ -361,6 +450,19 @@ fn toggle_vpn_blocking(enable: Option<bool>) -> Result<bool, String> {
     }
 
     Ok(is_vpn_active())
+}
+
+fn ensure_toolbar_access(webview: &tauri::Webview) -> Result<(), String> {
+    let expected_label = if cfg!(target_os = "linux") {
+        "content"
+    } else {
+        "toolbar"
+    };
+    if webview.label() == expected_label {
+        Ok(())
+    } else {
+        Err("Эта команда доступна только с панели приложения".into())
+    }
 }
 
 #[tauri::command]
@@ -481,7 +583,6 @@ pub fn run() {
         .setup(|app| {
             // All traffic goes completely through system network settings (system DNS, routes, etc.)
             // Optional host mapping if ever needed: --host-rules="MAP anivox.fun 45.95.96.255"
-            let browser_args = "--use-angle=d3d11 --enable-features=NvidiaVpSuperResolution,NvidiaVpTrueHDR,DirectCompositionVideoOverlays,DirectCompositionLetterboxVideoOptimization,DirectCompositionScalableVideoProcessing,DirectCompositionUseNV12DecodeSwapChain,UseD3D11VideoProcessor,D3D11VideoDecoder,HardwareAcceleratedVideoDecode,AllowDcompOverlaysInBackbuffer --disable-features=msEdgeVideoSuperResolution,msWebOOUI,msPdfOOUI,msSmartScreenProtection --enable-nv12-dxgi-video --ignore-gpu-blocklist --enable-gpu-rasterization --force-high-performance-gpu";
             let script = r#"
                 (function() {
                     // Multi-layer video stream & subtitle interceptor for MPV
@@ -793,50 +894,89 @@ pub fn run() {
                 })();
             "#;
 
+            #[cfg(target_os = "linux")]
+            let script_storage = add_linux_toolbar_script(script);
+            #[cfg(target_os = "linux")]
+            let script = script_storage.as_str();
+
             // Ensure WireGuard VPN is OFF by default on app launch
             if is_vpn_active() {
                 let _ = disconnect_vpn(false);
             }
 
-            std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", browser_args);
+            #[cfg(target_os = "windows")]
+            std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", BROWSER_ARGS);
 
-            let window = tauri::window::WindowBuilder::new(app, "main")
-                .title("Anivox")
-                .inner_size(1280.0, 720.0)
-                .min_inner_size(420.0, 300.0)
-                .build()?;
-            window.add_child(
-                tauri::webview::WebviewBuilder::new("toolbar", tauri::WebviewUrl::App("index.html".into()))
-                    .additional_browser_args(browser_args),
-                tauri::LogicalPosition::new(0.0, 0.0),
-                tauri::LogicalSize::new(1280.0, TOOLBAR_HEIGHT),
-            )?;
-            let navigation_app = app.handle().clone();
-            window.add_child(
-                tauri::webview::WebviewBuilder::new(
+            #[cfg(target_os = "linux")]
+            if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+                std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+            }
+
+            #[cfg(target_os = "linux")]
+            {
+                let navigation_app = app.handle().clone();
+                tauri::WebviewWindowBuilder::new(
+                    app,
                     "content",
                     tauri::WebviewUrl::External("https://anivox.fun/".parse().unwrap()),
                 )
+                .title("Anivox")
+                .inner_size(1280.0, 720.0)
+                .min_inner_size(420.0, 300.0)
                 .initialization_script(script)
-                .additional_browser_args(browser_args)
                 .on_navigation(move |url| {
-                    if !matches!(url.scheme(), "https" | "http") { return false; }
+                    if !matches!(url.scheme(), "https" | "http") {
+                        return false;
+                    }
                     if let Ok(mut last_url) = navigation_app.state::<BrowserState>().url.lock() {
                         *last_url = url.clone();
                     }
                     true
                 })
-                .on_page_load(|webview, payload| {
-                    if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
-                        tauri::async_runtime::spawn(async move {
-                            let _ = content_fullscreen(webview.window(), false).await;
-                        });
-                    }
-                }),
-                tauri::LogicalPosition::new(0.0, TOOLBAR_HEIGHT),
-                tauri::LogicalSize::new(1280.0, 720.0 - TOOLBAR_HEIGHT),
-            )?;
-            layout_webviews(&window)?;
+                .build()?;
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                let browser_args = browser_args_for_platform();
+                let window = tauri::window::WindowBuilder::new(app, "main")
+                    .title("Anivox")
+                    .inner_size(1280.0, 720.0)
+                    .min_inner_size(420.0, 300.0)
+                    .build()?;
+                window.add_child(
+                    tauri::webview::WebviewBuilder::new("toolbar", tauri::WebviewUrl::App("index.html".into()))
+                        .additional_browser_args(browser_args),
+                    tauri::LogicalPosition::new(0.0, 0.0),
+                    tauri::LogicalSize::new(1280.0, TOOLBAR_HEIGHT),
+                )?;
+                let navigation_app = app.handle().clone();
+                window.add_child(
+                    tauri::webview::WebviewBuilder::new(
+                        "content",
+                        tauri::WebviewUrl::External("https://anivox.fun/".parse().unwrap()),
+                    )
+                    .initialization_script(script)
+                    .additional_browser_args(browser_args)
+                    .on_navigation(move |url| {
+                        if !matches!(url.scheme(), "https" | "http") { return false; }
+                        if let Ok(mut last_url) = navigation_app.state::<BrowserState>().url.lock() {
+                            *last_url = url.clone();
+                        }
+                        true
+                    })
+                    .on_page_load(|webview, payload| {
+                        if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                            tauri::async_runtime::spawn(async move {
+                                let _ = content_fullscreen(webview.window(), false).await;
+                            });
+                        }
+                    }),
+                    tauri::LogicalPosition::new(0.0, TOOLBAR_HEIGHT),
+                    tauri::LogicalSize::new(1280.0, 720.0 - TOOLBAR_HEIGHT),
+                )?;
+                layout_webviews(&window)?;
+            }
 
             let handle = app.handle().clone();
             // Initialize Discord RPC on startup
@@ -885,4 +1025,4 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
+}
