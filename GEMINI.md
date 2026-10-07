@@ -24,6 +24,7 @@ This project is a desktop application wrapper for the website `https://anivox.fu
 │       ├── main.rs              # Main entrypoint
 │       └── lib.rs               # App core: window creation, injected topbar, Discord RPC, WireGuard VPN, MPV integration
 ├── ANIVOX-UA-48.conf            # WireGuard configuration file
+├── .github/workflows/build.yml  # CI/CD autobuild & release workflow
 ├── src/                         # Local vanilla HTML/JS fallback assets
 ├── package.json                 # npm scripts
 └── INIT.md                      # Detailed context reference file

@@ -18,7 +18,9 @@ Anivox is a Tauri v2 desktop wrapper for `https://anivox.fun/`, with a Rust back
 - `.cargo/config.toml`: selects `rust-lld.exe` for Windows MSVC linking.
 - `run.bat`: adds Bun's user installation to PATH and starts development.
 - `CHANGELOG.md`, `INIT.md`, `GEMINI.md`: background documentation. Verify architectural claims against current code: some describe earlier implementations.
+- `.github/workflows/build.yml`: CI/CD workflow for automated cross-platform builds (Windows and Linux) on push to `main` and release assets on tags.
 - `backup_linux/`: ignored historical Linux files and build artifacts.
+
 
 ## Development commands
 
@@ -28,13 +30,15 @@ Run from the repository root. Bun is the documented JavaScript package manager a
 bun install
 bun run dev
 bun run build
+bun run build:arch
+bun run install:arch
 bun run tauri info
 cargo check --manifest-path src-tauri/Cargo.toml
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 node --test tests/toolbar.test.mjs
 ```
 
-`package.json` only defines `dev`, `build`, and `tauri`; there are no current `build:arch`, `install:arch`, test, or lint scripts. Builds produce host-platform Tauri bundles and require the platform's Tauri/Rust prerequisites. Windows linking requires the configured `rust-lld.exe`.
+`package.json` defines `dev`, `build`, `build:arch`, `install:arch`, and `tauri`. Builds produce host-platform Tauri bundles and require the platform's Tauri/Rust prerequisites. Windows linking requires the configured `rust-lld.exe`.
 
 ## Implementation conventions
 

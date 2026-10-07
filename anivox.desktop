@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Anivox
+Comment=Anivox Desktop - Tauri Web Wrapper for anivox.fun with WireGuard VPN
+Exec=anivox
+Icon=anivox
+Terminal=false
+Type=Application
+Categories=AudioVideo;Player;Network;
+StartupWMClass=anivox
