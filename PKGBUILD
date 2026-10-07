@@ -11,7 +11,7 @@ optdepends=(
     'mpv: external player support'
     'wireguard-tools: WireGuard VPN tunnel support'
 )
-options=('!strip')
+options=('!strip' '!debug')
 
 package() {
     local root_dir="${startdir}"

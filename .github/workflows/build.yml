@@ -81,8 +81,7 @@ jobs:
         run: |
           docker run --rm -v "${{ github.workspace }}:/workspace" -w /workspace archlinux:latest bash -c '
             set -euo pipefail
-            pacman -Sy --noconfirm archlinux-keyring
-            pacman -S --noconfirm --needed fakeroot binutils
+            pacman -Sy --noconfirm --needed fakeroot binutils debugedit
             useradd -m builder
             chown -R builder:builder /workspace
             su -s /bin/bash builder -c "cd /workspace && PKGDEST=/workspace makepkg -e -f --nodeps --noconfirm"
