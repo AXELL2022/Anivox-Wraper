@@ -14,12 +14,17 @@ optdepends=(
 options=('!strip')
 
 package() {
-    install -Dm755 "${startdir}/src-tauri/target/release/anivox" "${pkgdir}/usr/bin/anivox"
+    local root_dir="${startdir}"
+    if [ ! -f "${root_dir}/src-tauri/target/release/anivox" ] && [ -f "${srcdir}/../src-tauri/target/release/anivox" ]; then
+        root_dir="${srcdir}/.."
+    fi
 
-    install -Dm644 "${startdir}/anivox.desktop" "${pkgdir}/usr/share/applications/anivox.desktop"
+    install -Dm755 "${root_dir}/src-tauri/target/release/anivox" "${pkgdir}/usr/bin/anivox"
 
-    install -Dm644 "${startdir}/src-tauri/icons/32x32.png" "${pkgdir}/usr/share/icons/hicolor/32x32/apps/anivox.png"
-    install -Dm644 "${startdir}/src-tauri/icons/128x128.png" "${pkgdir}/usr/share/icons/hicolor/128x128/apps/anivox.png"
-    install -Dm644 "${startdir}/src-tauri/icons/128x128@2x.png" "${pkgdir}/usr/share/icons/hicolor/256x256/apps/anivox.png"
-    install -Dm644 "${startdir}/src-tauri/icons/icon.png" "${pkgdir}/usr/share/icons/hicolor/512x512/apps/anivox.png"
+    install -Dm644 "${root_dir}/anivox.desktop" "${pkgdir}/usr/share/applications/anivox.desktop"
+
+    install -Dm644 "${root_dir}/src-tauri/icons/32x32.png" "${pkgdir}/usr/share/icons/hicolor/32x32/apps/anivox.png"
+    install -Dm644 "${root_dir}/src-tauri/icons/128x128.png" "${pkgdir}/usr/share/icons/hicolor/128x128/apps/anivox.png"
+    install -Dm644 "${root_dir}/src-tauri/icons/128x128@2x.png" "${pkgdir}/usr/share/icons/hicolor/256x256/apps/anivox.png"
+    install -Dm644 "${root_dir}/src-tauri/icons/icon.png" "${pkgdir}/usr/share/icons/hicolor/512x512/apps/anivox.png"
 }

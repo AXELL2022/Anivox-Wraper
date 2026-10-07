@@ -72,20 +72,23 @@ jobs:
 
       - name: Build Tauri application
         run: bun run build
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - name: Build Arch Linux package (.pkg.tar.zst)
         if: matrix.platform == 'linux'
         run: |
-          docker run --rm -v "$PWD:/workspace" -w /workspace archlinux:latest bash -c "
-            pacman-key --init
-            pacman-key --populate archlinux
+          docker run --rm -v "${{ github.workspace }}:/workspace" -w /workspace archlinux:latest bash -c '
+            set -euo pipefail
             pacman -Sy --noconfirm archlinux-keyring
-            pacman -Syu --noconfirm --needed fakeroot binutils zstd
+            pacman -S --noconfirm --needed fakeroot binutils
             useradd -m builder
             chown -R builder:builder /workspace
-            su builder -c 'makepkg -e -f --nodeps --noconfirm'
+            su -s /bin/bash builder -c "cd /workspace && PKGDEST=/workspace makepkg -e -f --nodeps --noconfirm"
             chmod -R a+rw /workspace
-          "
+            ls -la /workspace/*.pkg.tar.zst
+          '
 
       - name: Upload Windows Artifacts
         if: matrix.platform == 'windows'
@@ -104,7 +107,7 @@ jobs:
         with:
           name: anivox-arch
           path: "*.pkg.tar.zst"
-          if-no-files-found: warn
+          if-no-files-found: error
 
       - name: Upload Linux Artifacts (AppImage, deb, binary)
         if: matrix.platform == 'linux'
@@ -130,5 +133,10 @@ jobs:
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/anivox.exe
             src-tauri/target/release/anivox
+            src-tauri/target/release/bundle/**/latest.json
+            src-tauri/target/release/bundle/**/*.tar.gz*
+            src-tauri/target/release/bundle/**/*.zip*
+            src-tauri/target/release/bundle/**/*.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+

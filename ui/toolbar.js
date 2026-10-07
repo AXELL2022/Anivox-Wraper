@@ -4,9 +4,11 @@ const toolbarRoot = document.querySelector('#anivox-toolbar-host')?.shadowRoot ?
 const vpn = toolbarRoot.querySelector('#vpn');
 const vpnLabel = toolbarRoot.querySelector('#vpn-label');
 const mpv = toolbarRoot.querySelector('#mpv');
+const updater = toolbarRoot.querySelector('#updater');
 const status = toolbarRoot.querySelector('#status');
 let vpnActive = false;
 let vpnPending = false;
+let updatePending = false;
 let mpvTimer;
 
 function message(text, error = false) {
@@ -84,6 +86,30 @@ mpv.addEventListener('click', async () => {
   await action('mpv');
 });
 
+function showUpdateBadge(version, body) {
+  if (!updater) return;
+  updater.style.display = 'inline-flex';
+  updater.textContent = `✨ v${version}`;
+  updater.title = body ? `Доступно обновление v${version}\n\n${body}` : `Доступно обновление v${version}. Нажмите для установки.`;
+}
+
+if (updater) {
+  updater.addEventListener('click', async () => {
+    if (updatePending) return;
+    updatePending = true;
+    updater.disabled = true;
+    updater.textContent = 'Загрузка… 0%';
+    message('Загрузка обновления…');
+    try {
+      await invoke('install_update');
+    } catch (err) {
+      updatePending = false;
+      updater.disabled = false;
+      message(`Ошибка обновления: ${err}`, true);
+    }
+  });
+}
+
 async function init() {
   await listen('player-status', ({ payload }) => {
     clearTimeout(mpvTimer);
@@ -92,8 +118,41 @@ async function init() {
     mpv.disabled = !payload.resetAfterMs;
     mpvTimer = setTimeout(resetMpv, payload.resetAfterMs || 10000);
   });
+
+  await listen('update-available', ({ payload }) => {
+    if (payload && payload.version) {
+      showUpdateBadge(payload.version, payload.body);
+    }
+  });
+
+  await listen('update-progress', ({ payload }) => {
+    if (updater && updatePending) {
+      const percent = payload.percent ?? 0;
+      updater.textContent = `Загрузка… ${percent}%`;
+      message(`Загрузка обновления: ${percent}%`);
+    }
+  });
+
+  await listen('update-finished', () => {
+    if (updater) {
+      updater.textContent = 'Перезапуск…';
+      message('Обновление готово. Перезапуск…');
+    }
+  });
+
+  async function syncUpdate() {
+    try {
+      const info = await invoke('check_update');
+      if (info && info.available) {
+        showUpdateBadge(info.version, info.body);
+      }
+    } catch (_) {}
+  }
+  syncUpdate();
+
   await syncVpn();
   setInterval(syncVpn, 10000);
 }
 
 init().catch(err => message(`Ошибка панели: ${err}`, true));
+

@@ -13,6 +13,8 @@
     "allow-player-status",
     "allow-mpv-commands",
     "allow-vpn-commands",
-    "allow-browser-controls"
+    "allow-browser-controls",
+    "allow-check-update",
+    "allow-install-update"
   ]
 }

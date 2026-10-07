@@ -13,5 +13,8 @@ button:disabled { opacity: .5; cursor: wait; }
 [aria-pressed="true"] { border-color: #a16a8d; }
 #status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: #aaa3af; }
 #status.error { color: #ff8c9e; }
+.updater-btn { display: none; background: #162a22; color: #79ffe1; border-color: #2da44e; animation: pulse-updater 2.5s infinite ease-in-out; }
+.updater-btn:hover:not(:disabled) { background: #1f3d30; border-color: #79ffe1; color: #fff; }
+@keyframes pulse-updater { 0%, 100% { box-shadow: 0 0 0 0 rgba(121, 255, 225, 0.4); } 50% { box-shadow: 0 0 7px 2px rgba(121, 255, 225, 0.25); } }
 .brand { margin-left: auto; color: #817b88; font-size: 10px; font-weight: 700; letter-spacing: 1.5px; }
 @media (max-width: 540px) { .brand { display: none; } }

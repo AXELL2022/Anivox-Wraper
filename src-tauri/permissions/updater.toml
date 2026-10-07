@@ -1,0 +1,11 @@
+default = { description = "Permissions for checking and installing updates", permissions = ["allow-check-update", "allow-install-update"] }
+
+[[permission]]
+identifier = "allow-check-update"
+description = "Enables checking for application updates"
+commands.allow = ["check_update"]
+
+[[permission]]
+identifier = "allow-install-update"
+description = "Enables downloading and installing updates"
+commands.allow = ["install_update"]

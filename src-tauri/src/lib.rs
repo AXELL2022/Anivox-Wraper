@@ -2,6 +2,9 @@ use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 use std::process::Command;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager, State};
+#[cfg(target_os = "linux")]
+use tauri_plugin_opener::OpenerExt;
+use tauri_plugin_updater::UpdaterExt;
 
 #[cfg(not(target_os = "linux"))]
 const TOOLBAR_HEIGHT: f64 = 40.0;
@@ -571,6 +574,72 @@ fn open_in_mpv(
     }
 }
 
+#[derive(serde::Serialize, Clone)]
+struct UpdateInfo {
+    available: bool,
+    version: Option<String>,
+    body: Option<String>,
+}
+
+#[tauri::command]
+async fn check_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    match updater.check().await {
+        Ok(Some(update)) => Ok(UpdateInfo {
+            available: true,
+            version: Some(update.version),
+            body: update.body,
+        }),
+        Ok(None) => Ok(UpdateInfo {
+            available: false,
+            version: None,
+            body: None,
+        }),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    if std::env::var_os("APPIMAGE").is_none() {
+        let _ = app.opener().open_url("https://github.com/AXELL2022/Anivox-Wraper/releases/latest", None::<&str>);
+        return Ok(());
+    }
+
+    let updater = app.updater().map_err(|e| e.to_string())?;
+    let update = updater.check().await.map_err(|e| e.to_string())?;
+    if let Some(update) = update {
+        let mut downloaded: usize = 0;
+        let app_progress = app.clone();
+        let app_finished = app.clone();
+        update.download_and_install(
+            move |chunk_length, content_length| {
+                downloaded += chunk_length;
+                let percent = content_length.map(|total| {
+                    if total > 0 {
+                        ((downloaded as f64 / total as f64) * 100.0).min(100.0) as u32
+                    } else {
+                        0
+                    }
+                }).unwrap_or(0);
+
+                let _ = app_progress.emit("update-progress", serde_json::json!({
+                    "downloaded": downloaded,
+                    "total": content_length,
+                    "percent": percent
+                }));
+            },
+            move || {
+                let _ = app_finished.emit("update-finished", ());
+            }
+        ).await.map_err(|e| e.to_string())?;
+
+        app.restart();
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -580,6 +649,7 @@ pub fn run() {
         })
         .manage(DiscordState(Mutex::new(None)))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // All traffic goes completely through system network settings (system DNS, routes, etc.)
             // Optional host mapping if ever needed: --host-rules="MAP anivox.fun 45.95.96.255"
@@ -997,6 +1067,21 @@ pub fn run() {
                     }
                 }
             });
+
+            // Check for application updates in the background 3 seconds after launch
+            let updater_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+                if let Ok(updater) = updater_handle.updater() {
+                    if let Ok(Some(update)) = updater.check().await {
+                        let _ = updater_handle.emit("update-available", serde_json::json!({
+                            "version": update.version,
+                            "body": update.body
+                        }));
+                    }
+                }
+            });
+
             Ok(())
         })
         .on_window_event(|window, event| match event {
@@ -1021,7 +1106,9 @@ pub fn run() {
             browser_action,
             report_player_status,
             content_fullscreen,
-            open_in_mpv
+            open_in_mpv,
+            check_update,
+            install_update
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

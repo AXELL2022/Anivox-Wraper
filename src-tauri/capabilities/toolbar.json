@@ -3,5 +3,11 @@
   "identifier": "toolbar",
   "description": "Local application toolbar, available independently of the remote site",
   "webviews": ["toolbar"],
-  "permissions": ["core:default", "allow-vpn-commands", "allow-browser-controls"]
+  "permissions": [
+    "core:default",
+    "allow-vpn-commands",
+    "allow-browser-controls",
+    "allow-check-update",
+    "allow-install-update"
+  ]
 }

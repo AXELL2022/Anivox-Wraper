@@ -77,3 +77,28 @@ test('MPV recovers when the site cannot respond and receives player feedback', a
   assert.equal(element('#mpv').textContent, '✔ Запущен!');
   assert.equal(element('#mpv').disabled, false);
 });
+
+test('Updater shows badge on available update and displays progress on click', async () => {
+  let installCalled = false;
+  const { element, listeners } = await toolbar(async command => {
+    if (command === 'get_vpn_status') return false;
+    if (command === 'check_update') return { available: false };
+    if (command === 'install_update') { installCalled = true; return; }
+  });
+
+  assert.equal(element('#updater').style.display, undefined);
+  listeners.get('update-available')({ payload: { version: '0.2.0', body: 'New features' } });
+  assert.equal(element('#updater').style.display, 'inline-flex');
+  assert.equal(element('#updater').textContent, '✨ v0.2.0');
+
+  await element('#updater').handlers.click();
+  assert.equal(installCalled, true);
+  assert.equal(element('#updater').disabled, true);
+
+  listeners.get('update-progress')({ payload: { percent: 42 } });
+  assert.equal(element('#updater').textContent, 'Загрузка… 42%');
+
+  listeners.get('update-finished')();
+  assert.equal(element('#updater').textContent, 'Перезапуск…');
+});
+

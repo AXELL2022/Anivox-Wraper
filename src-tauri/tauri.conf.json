@@ -22,5 +22,13 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEEyQ0Y1MDczNjJDREM2MTEKUldRUnhzMWljMURQb2xoTEhGTlRONGNhQVRYQW9MV0dwdWR6Qzl1WkEvOEovVFRJazF6ZkRvSGkK",
+      "endpoints": [
+        "https://github.com/AXELL2022/Anivox-Wraper/releases/latest/download/latest.json"
+      ]
+    }
   }
 }
