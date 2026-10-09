@@ -1,6 +1,6 @@
 [package]
 name = "anivox"
-version = "0.1.0"
+version = "0.1.1"
 description = "Anivox Desktop"
 authors = ["yasin"]
 edition = "2021"

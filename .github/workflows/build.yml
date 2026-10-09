@@ -68,7 +68,7 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Run unit tests
-        run: node --test tests/toolbar.test.mjs
+        run: node --test tests/toolbar.test.mjs tests/player_fullscreen.test.mjs
 
       - name: Build Tauri application
         run: bun run build
