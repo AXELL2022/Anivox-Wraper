@@ -6,6 +6,7 @@ const vpnLabel = toolbarRoot.querySelector('#vpn-label');
 const mpv = toolbarRoot.querySelector('#mpv');
 const updater = toolbarRoot.querySelector('#updater');
 const status = toolbarRoot.querySelector('#status');
+const brand = toolbarRoot.querySelector('.brand');
 let vpnActive = false;
 let vpnPending = false;
 let updatePending = false;
@@ -149,6 +150,16 @@ async function init() {
     } catch (_) {}
   }
   syncUpdate();
+
+  async function syncVersion() {
+    try {
+      const v = await invoke('get_app_version');
+      if (v && brand) {
+        brand.textContent = v;
+      }
+    } catch (_) {}
+  }
+  syncVersion();
 
   await syncVpn();
   setInterval(syncVpn, 10000);

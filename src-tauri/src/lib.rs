@@ -182,6 +182,11 @@ async fn browser_action(
     result.map_err(|err| err.to_string())
 }
 
+#[tauri::command]
+fn get_app_version(app: tauri::AppHandle) -> String {
+    format!("v{}", app.package_info().version)
+}
+
 // State to hold the Discord IPC client
 pub struct DiscordState(pub Mutex<Option<DiscordIpcClient>>);
 
@@ -1233,7 +1238,8 @@ pub fn run() {
             content_fullscreen,
             open_in_mpv,
             check_update,
-            install_update
+            install_update,
+            get_app_version
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

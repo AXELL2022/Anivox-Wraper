@@ -1,7 +1,7 @@
 [[permission]]
 identifier = "allow-browser-controls"
 description = "Allows the local toolbar to control the content webview"
-commands.allow = ["browser_action"]
+commands.allow = ["browser_action", "get_app_version"]
 
 [[permission]]
 identifier = "allow-player-status"
