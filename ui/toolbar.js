@@ -89,9 +89,10 @@ mpv.addEventListener('click', async () => {
 
 function showUpdateBadge(version, body) {
   if (!updater) return;
+  const cleanVersion = String(version || '').replace(/^v/, '');
   updater.style.display = 'inline-flex';
-  updater.textContent = `✨ v${version}`;
-  updater.title = body ? `Доступно обновление v${version}\n\n${body}` : `Доступно обновление v${version}. Нажмите для установки.`;
+  updater.textContent = `✨ v${cleanVersion}`;
+  updater.title = body ? `Доступно обновление v${cleanVersion}\n\n${body}` : `Доступно обновление v${cleanVersion}. Нажмите для установки.`;
 }
 
 if (updater) {

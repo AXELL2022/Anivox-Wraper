@@ -1,6 +1,6 @@
 # Maintainer: axell
 pkgname=anivox
-pkgver=0.1.2
+pkgver=0.1.3
 pkgrel=1
 pkgdesc="Anivox Desktop - Tauri Web Wrapper for anivox.fun with WireGuard VPN"
 arch=('x86_64')
