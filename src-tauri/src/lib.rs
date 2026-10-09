@@ -1212,6 +1212,57 @@ pub fn run() {
                 }
             });
 
+            let quit_item = tauri::menu::MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
+            let show_item = tauri::menu::MenuItem::with_id(app, "show", "Открыть", true, None::<&str>)?;
+            let menu = tauri::menu::Menu::with_items(app, &[&show_item, &quit_item])?;
+
+            let mut tray_builder = tauri::tray::TrayIconBuilder::new()
+                .tooltip("Anivox")
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "show" => {
+                        if let Some(w) = app.get_window("main").or_else(|| app.get_window("content")) {
+                            let _ = w.show();
+                            let _ = w.unminimize();
+                            let _ = w.set_focus();
+                        }
+                    }
+                    "quit" => {
+                        if is_vpn_active() {
+                            let _ = disconnect_vpn(false);
+                        }
+                        app.exit(0);
+                    }
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let tauri::tray::TrayIconEvent::Click {
+                        button: tauri::tray::MouseButton::Left,
+                        button_state: tauri::tray::MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        let app = tray.app_handle();
+                        if let Some(w) = app.get_window("main").or_else(|| app.get_window("content")) {
+                            let is_visible = w.is_visible().unwrap_or(false);
+                            if is_visible {
+                                let _ = w.hide();
+                            } else {
+                                let _ = w.show();
+                                let _ = w.unminimize();
+                                let _ = w.set_focus();
+                            }
+                        }
+                    }
+                });
+
+            if let Some(icon) = app.default_window_icon() {
+                tray_builder = tray_builder.icon(icon.clone());
+            }
+
+            tray_builder.build(app)?;
+
             Ok(())
         })
         .on_window_event(|window, event| match event {
@@ -1220,6 +1271,10 @@ pub fn run() {
                 tauri::async_runtime::spawn_blocking(move || {
                     let _ = layout_webviews(&window);
                 });
+            }
+            tauri::WindowEvent::CloseRequested { api, .. } => {
+                api.prevent_close();
+                let _ = window.hide();
             }
             tauri::WindowEvent::Destroyed => {
                 if is_vpn_active() {
