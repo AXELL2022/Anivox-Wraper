@@ -4,7 +4,10 @@
   "version": "0.1.1",
   "identifier": "com.yasin.anivox",
   "build": {
-    "frontendDist": "../ui"
+    "frontendDist": "../ui",
+    "windows": {
+      "staticVCRuntime": true
+    }
   },
   "app": {
     "withGlobalTauri": true,
