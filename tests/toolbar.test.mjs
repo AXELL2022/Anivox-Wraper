@@ -108,8 +108,8 @@ test('Updater shows badge on available update and displays progress on click', a
 test('Brand element displays application version from get_app_version', async () => {
   const { element } = await toolbar(async command => {
     if (command === 'get_vpn_status') return false;
-    if (command === 'get_app_version') return 'v0.1.3';
+    if (command === 'get_app_version') return 'v0.2.0';
   });
-  assert.equal(element('.brand').textContent, 'v0.1.3');
+  assert.equal(element('.brand').textContent, 'v0.2.0');
 });
 

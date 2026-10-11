@@ -660,6 +660,97 @@ pub fn run() {
             // Optional host mapping if ever needed: --host-rules="MAP anivox.fun 45.95.96.255"
             let script = r#"
                 (function() {
+                    // Disable broken ManagedMediaSource so hls.js uses standard MediaSource
+                    try {
+                        delete window.ManagedMediaSource;
+                        delete self.ManagedMediaSource;
+                        Object.defineProperty(window, 'ManagedMediaSource', {
+                            get: () => undefined,
+                            set: () => {},
+                            configurable: true
+                        });
+                        Object.defineProperty(self, 'ManagedMediaSource', {
+                            get: () => undefined,
+                            set: () => {},
+                            configurable: true
+                        });
+                    } catch (e) {}
+
+                    // Override HLS player buffer configuration to allow smooth, deep caching
+                    function applyHlsBufferOptimization(ctx) {
+                        if (!ctx) return;
+                        if (ctx.hlsConfig) {
+                            ctx.hlsConfig.preferManagedMediaSource = false;
+                            ctx.hlsConfig.maxBufferLength = 120;
+                            ctx.hlsConfig.maxMaxBufferLength = 300;
+                            ctx.hlsConfig.maxBufferSize = 268435456; // 256MB
+                        }
+                        if (ctx.hls && ctx.hls.config) {
+                            ctx.hls.config.preferManagedMediaSource = false;
+                            ctx.hls.config.maxBufferLength = 120;
+                            ctx.hls.config.maxMaxBufferLength = 300;
+                            ctx.hls.config.maxBufferSize = 268435456;
+                            if (ctx.hls.buffering === false && typeof ctx.hls.resumeBuffering === 'function') {
+                                ctx.hls.resumeBuffering();
+                            }
+                        }
+                        if (typeof ctx.updateBuffered === 'function') {
+                            ctx.updateBuffered();
+                        }
+                    }
+
+                    // Dispatch progress events when SourceBuffer receives video/audio chunks
+                    try {
+                        if (typeof SourceBuffer !== 'undefined' && SourceBuffer.prototype) {
+                            const origAppend = SourceBuffer.prototype.appendBuffer;
+                            SourceBuffer.prototype.appendBuffer = function(data) {
+                                this.addEventListener('updateend', function onAppendEnd() {
+                                    const videos = document.querySelectorAll('video');
+                                    for (let i = 0; i < videos.length; i++) {
+                                        videos[i].dispatchEvent(new Event('progress'));
+                                    }
+                                }, { once: true });
+                                return origAppend.apply(this, arguments);
+                            };
+                        }
+                    } catch (e) {}
+
+                    // Periodic buffer synchronization and stall auto-kick for WebKitGTK
+                    setInterval(() => {
+                        const container = document.querySelector('.player-container');
+                        if (container) {
+                            const comp = container.__vueParentComponent || container._vnode?.component || container.__vue_app__;
+                            if (comp) {
+                                const ctx = comp.ctx || comp.proxy || comp.setupState;
+                                applyHlsBufferOptimization(ctx);
+                            }
+                        }
+                        const video = document.querySelector('video.video-element') || document.querySelector('video');
+                        if (video) {
+                            video.dispatchEvent(new Event('progress'));
+                            // If video is stalled/waiting but has buffered content at currentTime, resume playback
+                            if (video.readyState < 3 && !video.paused && video.buffered && video.buffered.length > 0) {
+                                for (let i = 0; i < video.buffered.length; i++) {
+                                    if (video.currentTime >= video.buffered.start(i) && video.currentTime < video.buffered.end(i) - 0.1) {
+                                        video.play().catch(() => {});
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }, 400);
+
+                    // Force HLS.js (MSE) over broken native WebKitGTK GStreamer HLS
+                    try {
+                        const origCanPlay = HTMLMediaElement.prototype.canPlayType;
+                        HTMLMediaElement.prototype.canPlayType = function(type) {
+                            if (typeof type === 'string' && (type.toLowerCase().includes('mpegurl') || type.toLowerCase().includes('m3u8'))) {
+                                return '';
+                            }
+                            return origCanPlay.apply(this, arguments);
+                        };
+                    } catch (e) {}
+
                     // Multi-layer video stream & subtitle interceptor for MPV
                     let apiLinks = null;
                     let currentHlsUrl = null;
@@ -1040,17 +1131,17 @@ pub fn run() {
                     function setupVideoStyles() {
                         const style = document.createElement('style');
                         style.textContent = `
-                            /* DirectComposition Video Overlay & NVIDIA RTX VSR Fixes */
-                            .player-container, .player, [class*="player"], .video-element, video, iframe {
-                                border-radius: 0 !important;
-                                -webkit-mask: none !important;
-                                mask: none !important;
-                                filter: none !important;
-                                backdrop-filter: none !important;
-                                transform: none !important;
+                            /* Native CSS smooth scrolling */
+                            html {
+                                scroll-behavior: smooth !important;
                             }
-                            video.video-element, video {
-                                background-color: transparent !important;
+                            /* Disable hover repaints during scrolling to keep frametimes flat */
+                            body.is-scrolling * {
+                                pointer-events: none !important;
+                            }
+                            /* Hardware video layer promotion */
+                            .player-container, video.video-element, video {
+                                transform: translateZ(0);
                             }
                             .touch-zone {
                                 background: transparent !important;
@@ -1058,9 +1149,65 @@ pub fn run() {
                             .libassjs-canvas {
                                 pointer-events: none !important;
                             }
+                            /* Eliminate expensive GPU readback backdrop blur over video to maintain steady 60 FPS */
+                            .player-container *,
+                            .player-container [class*="controls"] *,
+                            .progress-bar,
+                            .player-toast,
+                            .modal,
+                            .search_window,
+                            .arcs-modal-overlay {
+                                backdrop-filter: none !important;
+                                -webkit-backdrop-filter: none !important;
+                            }
+                            /* Clean dark styling for controls without blur overhead */
+                            .player-container .controls .controls-bar .audio,
+                            .player-container .controls .controls-bar .subtitle,
+                            .player-container .controls .controls-bar .volume,
+                            .player-container .controls .controls-bar .play,
+                            .player-container .controls .controls-bar .play-button,
+                            .player-container .controls .controls-bar .fullscreen,
+                            .player-container .controls .controls-bar .quality,
+                            .player-container .controls .controls-bar .chrome-cast,
+                            .player-container .controls .controls-bar .skip img,
+                            .player-container .controls .controls-bar .volume-percentage,
+                            .player-container .preview-container .play-button,
+                            .ad-mute-btn,
+                            .ad-skip-btn {
+                                background-color: rgba(22, 22, 22, 0.78) !important;
+                            }
+                            .progress-bar {
+                                background-color: rgba(255, 255, 255, 0.25) !important;
+                            }
                         `;
                         document.head.appendChild(style);
 
+                        // Disable hover calculations while user is actively scrolling
+                        let scrollDebounceTimer = null;
+                        window.addEventListener('scroll', function() {
+                            if (document.body && !document.body.classList.contains('is-scrolling')) {
+                                document.body.classList.add('is-scrolling');
+                            }
+                            clearTimeout(scrollDebounceTimer);
+                            scrollDebounceTimer = setTimeout(function() {
+                                if (document.body) {
+                                    document.body.classList.remove('is-scrolling');
+                                }
+                            }, 100);
+                        }, { passive: true });
+
+                        // Constant 60 FPS frame pacer to keep compositor active and prevent idle drops
+                        const pacer = document.createElement('div');
+                        pacer.id = 'anivox-frame-pacer';
+                        pacer.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0.01;pointer-events:none;z-index:-1;';
+                        document.documentElement.appendChild(pacer);
+                        let pacerToggle = false;
+                        function framePace() {
+                            pacer.style.transform = pacerToggle ? 'translate3d(0,0,0.05px)' : 'translate3d(0,0,0px)';
+                            pacerToggle = !pacerToggle;
+                            requestAnimationFrame(framePace);
+                        }
+                        requestAnimationFrame(framePace);
                     }
 
                     if (document.readyState === 'loading') {
@@ -1107,9 +1254,14 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", BROWSER_ARGS);
 
+            // #[cfg(target_os = "linux")]
+            // if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+            //     std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+            // }
+
             #[cfg(target_os = "linux")]
-            if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-                std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+            if std::env::var_os("WEBKIT_FORCE_COMPOSITING_MODE").is_none() {
+                std::env::set_var("WEBKIT_FORCE_COMPOSITING_MODE", "1");
             }
 
             #[cfg(target_os = "linux")]
@@ -1123,6 +1275,8 @@ pub fn run() {
                 .title("Anivox")
                 .inner_size(1280.0, 720.0)
                 .min_inner_size(420.0, 300.0)
+                .devtools(true)
+                .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0")
                 .initialization_script(script)
                 .on_navigation(move |url| {
                     if !matches!(url.scheme(), "https" | "http") {
