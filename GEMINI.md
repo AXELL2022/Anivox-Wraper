@@ -20,6 +20,10 @@ This project is a desktop application wrapper for the website `https://anivox.fu
 │   │   ├── discord.toml         # Custom IPC permissions (allow-set-discord-rpc)
 │   │   ├── vpn.toml             # Custom IPC permissions (allow-vpn-commands)
 │   │   └── mpv.toml             # Custom IPC permissions (allow-mpv-commands)
+│   ├── scripts/
+│   │   ├── inject-common.js     # Shared hooks: MPV stream capture, fullscreen, Discord RPC
+│   │   ├── inject-windows.js    # Windows: DirectComposition video overlay & RTX VSR/TrueHDR CSS
+│   │   └── inject-linux.js      # Linux: WebKitGTK HLS buffer recovery & 60 FPS frame pacer
 │   └── src/
 │       ├── main.rs              # Main entrypoint
 │       └── lib.rs               # App core: window creation, injected topbar, Discord RPC, WireGuard VPN, MPV integration

@@ -6,7 +6,8 @@ Anivox is a Tauri v2 desktop wrapper for `https://anivox.fun/`, with a Rust back
 
 ## Source map
 
-- `src-tauri/src/lib.rs`: application setup, native window with separate `toolbar` and `content` webviews, VPN commands, Discord state, MPV launch, and the embedded `script` containing remote-page media hooks/video CSS.
+- `src-tauri/src/lib.rs`: application setup, native window with separate `toolbar` and `content` webviews, VPN commands, Discord state, MPV launch, and initialization script assembly via `concat!` and `include_str!`.
+- `src-tauri/scripts/`: remote webview injection scripts separated by platform (`inject-common.js`, `inject-windows.js`, `inject-linux.js`), including MPV media hooks, fullscreen handlers, RTX VSR DirectComposition CSS, and WebKitGTK buffer/pacer workarounds.
 - `ui/`: bundled local toolbar HTML/CSS/JS; navigation, VPN and MPV controls load independently of the remote website.
 - `src-tauri/src/main.rs`: minimal entry point calling `anivox_lib::run()`; preserves the Windows release console suppression attribute.
 - `src-tauri/Cargo.toml`: Rust 2021 crate and dependencies; library name is `anivox_lib`.
@@ -42,8 +43,8 @@ node --test tests/toolbar.test.mjs
 
 ## Implementation conventions
 
-- Keep backend application logic in `lib.rs` and the entry point minimal. Follow nearby Rust and embedded JavaScript style; avoid unrelated formatting churn in the large raw string.
-- Change `ui/` for toolbar design and controls; change the embedded `script` in `lib.rs` for media interception, video styling, keyboard shortcuts, and remote browser-side IPC calls.
+- Keep backend application logic in `lib.rs` and the entry point minimal.
+- Change `ui/` for toolbar design and controls; change `src-tauri/scripts/inject-common.js` for cross-platform remote hooks, `src-tauri/scripts/inject-windows.js` for Windows/VSR DirectComposition styles, and `src-tauri/scripts/inject-linux.js` for WebKitGTK-specific engine/buffer optimizations.
 - Register new IPC commands in `tauri::generate_handler!`, define their permissions under `src-tauri/permissions/`, and enable them in `capabilities/default.json`. Keep remote access scoped to the intended origin.
 - Retain platform-specific `#[cfg(target_os = ...)]` branches when changing process execution or VPN behavior.
 - VPN currently uses system WireGuard: `wireguard.exe` tunnel services on Windows, `nmcli` with a `wg-quick` fallback on Linux. Startup and window destruction attempt to disconnect an active named tunnel. There is no active `proxy.rs` or embedded wireproxy engine in the current source tree.

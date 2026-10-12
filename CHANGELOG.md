@@ -83,7 +83,7 @@
 * **Решение:**
   - Создан файл [`PKGBUILD`](file:///run/media/axell/3262618D6261571F/Anivox-Wraper/PKGBUILD) в корне проекта.
   - Добавлены npm-скрипты в `package.json`:
-    - `npm run build:arch` — собирает готовый пакет `anivox-0.2.0-1-x86_64.pkg.tar.zst`.
+    - `npm run build:arch` — собирает готовый пакет `anivox-0.2.1-1-x86_64.pkg.tar.zst`.
     - `npm run install:arch` — собирает и сразу устанавливает пакет в систему.
   - Пакет регистрируется в базе `pacman`, создаёт команду `anivox`, устанавливает иконки и ярлык меню приложений `/usr/share/applications/anivox.desktop`. Чисто удаляется через `sudo pacman -R anivox`.
 
@@ -102,3 +102,14 @@
 * **Оптимизация плавности скроллинга и композитинга:**
   - Устранен синхронный JS-обработчик колесика мыши, вызывавший задержки до 125 мс.
   - Включен аппаратный композитинг через `WEBKIT_FORCE_COMPOSITING_MODE=1` и легкий кадровый пейсер для устранения просадок частоты кадров в простое.
+
+---
+
+## [0.2.1] — Восстановление RTX VSR и разделение платформенных инъекций
+* **Восстановление работы NVIDIA RTX Video Super Resolution (VSR) и RTX TrueHDR:**
+  - Восстановлены обязательные сбросы DirectComposition для аппаратных оверлеев в Windows WebView2 (`border-radius: 0 !important`, `transform: none !important`, `mask: none !important`, `filter: none !important`, прозрачный фон видеоэлемента).
+  - Устранена 3D-трансформация (`transform: translateZ(0)`), которая приводила к дисквалификации видео из DirectComposition и блокировала вызов апскейлера видеодрайвера NVIDIA.
+* **Модульное разделение внедряемых скриптов и стилей (`src-tauri/scripts/`):**
+  - Выделены отдельные файлы: `inject-windows.js` (DirectComposition/VSR), `inject-linux.js` (WebKitGTK HLS MSE фиксы и frame pacer) и `inject-common.js` (MPV перехват, горячие клавиши, Discord RPC).
+  - Сборка скриптов разделена на этапе компиляции в Rust с помощью `#[cfg(target_os = ...)]`, макросов `concat!` и `include_str!`.
+  - Из сборки под Windows полностью исключен код и таймеры для Linux, что гарантирует независимость и стабильность обеих платформ.

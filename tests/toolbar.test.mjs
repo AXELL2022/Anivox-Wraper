@@ -87,12 +87,12 @@ test('Updater shows badge on available update and displays progress on click', a
   });
 
   assert.equal(element('#updater').style.display, undefined);
-  listeners.get('update-available')({ payload: { version: '0.2.0', body: 'New features' } });
+  listeners.get('update-available')({ payload: { version: '0.2.1', body: 'New features' } });
   assert.equal(element('#updater').style.display, 'inline-flex');
-  assert.equal(element('#updater').textContent, '✨ v0.2.0');
-
-  listeners.get('update-available')({ payload: { version: 'v0.2.1', body: 'Bug fixes' } });
   assert.equal(element('#updater').textContent, '✨ v0.2.1');
+
+  listeners.get('update-available')({ payload: { version: 'v0.2.2', body: 'Bug fixes' } });
+  assert.equal(element('#updater').textContent, '✨ v0.2.2');
 
   await element('#updater').handlers.click();
   assert.equal(installCalled, true);
@@ -108,8 +108,8 @@ test('Updater shows badge on available update and displays progress on click', a
 test('Brand element displays application version from get_app_version', async () => {
   const { element } = await toolbar(async command => {
     if (command === 'get_vpn_status') return false;
-    if (command === 'get_app_version') return 'v0.2.0';
+    if (command === 'get_app_version') return 'v0.2.1';
   });
-  assert.equal(element('.brand').textContent, 'v0.2.0');
+  assert.equal(element('.brand').textContent, 'v0.2.1');
 });
 
