@@ -19,7 +19,7 @@ export function findFiles(dir) {
 export function generateManifest({
   inputDir = 'release-artifacts',
   outputDir = 'dist-release',
-  tag = process.env.RELEASE_TAG || 'v0.2.1',
+  tag = process.env.RELEASE_TAG || 'v0.2.2',
   repo = process.env.REPO_NAME || 'AXELL2022/Anivox-Wraper',
 } = {}) {
   const version = tag.replace(/^v/, '');

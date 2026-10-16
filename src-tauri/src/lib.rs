@@ -6,13 +6,22 @@ use tauri::{Emitter, Manager, State};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 
-#[cfg(not(target_os = "linux"))]
 const TOOLBAR_HEIGHT: f64 = 40.0;
+const SHIKIMORI_MARGIN: f64 = 16.0;
+const SHIKIMORI_HEADER: f64 = 40.0;
+
+#[cfg(test)]
+mod shikimori_tests;
+
+#[derive(Default)]
+struct ShikimoriState {
+    visible: std::sync::atomic::AtomicBool,
+    operation: tokio::sync::Mutex<()>,
+}
 
 #[cfg(target_os = "windows")]
 const BROWSER_ARGS: &str = "--use-angle=d3d11 --enable-features=NvidiaVpSuperResolution,NvidiaVpTrueHDR,DirectCompositionVideoOverlays,DirectCompositionLetterboxVideoOptimization,DirectCompositionScalableVideoProcessing,DirectCompositionUseNV12DecodeSwapChain,UseD3D11VideoProcessor,D3D11VideoDecoder,HardwareAcceleratedVideoDecode,AllowDcompOverlaysInBackbuffer --disable-features=msEdgeVideoSuperResolution,msWebOOUI,msPdfOOUI,msSmartScreenProtection --enable-nv12-dxgi-video --ignore-gpu-blocklist --enable-gpu-rasterization --force-high-performance-gpu";
 
-#[cfg(not(target_os = "linux"))]
 fn browser_args_for_platform() -> &'static str {
     #[cfg(target_os = "windows")]
     {
@@ -118,7 +127,262 @@ fn layout_webviews(window: &tauri::Window) -> tauri::Result<()> {
             size: tauri::LogicalSize::new(size.width, (size.height - top).max(1.0)).into(),
         })?;
     }
+    layout_shikimori(window, top)?;
     Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn layout_shikimori(window: &tauri::Window, top: f64) -> tauri::Result<()> {
+    let size = window
+        .inner_size()?
+        .to_logical::<f64>(window.scale_factor()?);
+    if let Some(overlay) = window.get_webview("shikimori-overlay") {
+        overlay.set_bounds(tauri::Rect {
+            position: tauri::LogicalPosition::new(0.0, top).into(),
+            size: tauri::LogicalSize::new(size.width, (size.height - top).max(1.0)).into(),
+        })?;
+    }
+    if let Some(site) = window.get_webview("shikimori") {
+        site.set_bounds(tauri::Rect {
+            position: tauri::LogicalPosition::new(
+                SHIKIMORI_MARGIN,
+                top + SHIKIMORI_MARGIN + SHIKIMORI_HEADER,
+            )
+            .into(),
+            size: tauri::LogicalSize::new(
+                (size.width - SHIKIMORI_MARGIN * 2.0).max(1.0),
+                (size.height - top - SHIKIMORI_MARGIN * 2.0 - SHIKIMORI_HEADER).max(1.0),
+            )
+            .into(),
+        })?;
+    }
+    Ok(())
+}
+
+// Wry packs Linux webviews into a GtkBox. Reparent them into a GtkOverlay
+// so the original WebKit view stays alive, visible and at its original size.
+#[cfg(target_os = "linux")]
+async fn attach_linux_shikimori(webview: &tauri::Webview) -> Result<(), String> {
+    let window = webview.window();
+    let label = webview.label().to_string();
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    webview
+        .with_webview(move |platform| {
+            use gtk::prelude::*;
+            let result = (|| -> Result<(), String> {
+                let vbox = window.default_vbox().map_err(|err| err.to_string())?;
+                let root = vbox
+                    .children()
+                    .into_iter()
+                    .find(|child| child.widget_name() == "anivox-shikimori-root")
+                    .and_then(|child| child.downcast::<gtk::Overlay>().ok());
+                let widget = platform.inner();
+                let root = if let Some(root) = root {
+                    root
+                } else {
+                    if label != "content" {
+                        return Err("Контейнер Shikimori не создан".into());
+                    }
+                    let root = gtk::Overlay::new();
+                    root.set_widget_name("anivox-shikimori-root");
+                    vbox.remove(&widget);
+                    root.add(&widget);
+                    vbox.pack_start(&root, true, true, 0);
+                    widget.show();
+                    root.show();
+                    root
+                };
+                if label == "content"
+                    || widget
+                        .parent()
+                        .is_some_and(|parent| parent.widget_name() == "anivox-shikimori-root")
+                {
+                    return Ok(());
+                }
+                vbox.remove(&widget);
+                widget.set_halign(gtk::Align::Fill);
+                widget.set_valign(gtk::Align::Fill);
+                // Clear the size request set when this view was created in the GtkBox.
+                widget.set_size_request(-1, -1);
+                if label == "shikimori" {
+                    widget.set_margin_start(SHIKIMORI_MARGIN as i32);
+                    widget.set_margin_end(SHIKIMORI_MARGIN as i32);
+                    widget.set_margin_top(
+                        (TOOLBAR_HEIGHT + SHIKIMORI_MARGIN + SHIKIMORI_HEADER) as i32,
+                    );
+                    widget.set_margin_bottom(SHIKIMORI_MARGIN as i32);
+                } else {
+                    widget.set_margin_top(TOOLBAR_HEIGHT as i32);
+                }
+                root.add_overlay(&widget);
+                Ok(())
+            })();
+            let _ = sender.send(result);
+        })
+        .map_err(|err| err.to_string())?;
+    receiver.await.map_err(|err| err.to_string())?
+}
+
+fn report_shikimori(app: &tauri::AppHandle, visible: bool) {
+    #[cfg(target_os = "linux")]
+    let target = "content";
+    #[cfg(not(target_os = "linux"))]
+    let target = "toolbar";
+    let _ = app.emit_to(
+        target,
+        "shikimori-status",
+        serde_json::json!({ "visible": visible }),
+    );
+}
+
+fn unload_shikimori(app: &tauri::AppHandle) -> Result<bool, String> {
+    for label in ["shikimori", "shikimori-overlay"] {
+        if let Some(view) = app.get_webview(label) {
+            view.close().map_err(|err| err.to_string())?;
+        }
+    }
+    app.state::<ShikimoriState>()
+        .visible
+        .store(false, std::sync::atomic::Ordering::Relaxed);
+    report_shikimori(app, false);
+    if let Some(content) = app.get_webview("content") {
+        let _ = content.set_focus();
+    }
+    Ok(false)
+}
+
+fn shikimori_navigation_allowed(url: &tauri::Url) -> bool {
+    // Social sign-in redirects away from Shikimori and back. IPC permissions
+    // remain origin-scoped in capabilities/shikimori.json.
+    url.scheme() == "https"
+}
+
+fn shikimori_new_window_response(
+    url: &tauri::Url,
+) -> tauri::webview::NewWindowResponse<tauri::Wry> {
+    if shikimori_navigation_allowed(url) {
+        // Let the engine create the popup so cookies and window.opener are
+        // preserved for OAuth; opening it in the system browser would not.
+        tauri::webview::NewWindowResponse::Allow
+    } else {
+        tauri::webview::NewWindowResponse::Deny
+    }
+}
+
+async fn show_shikimori(app: &tauri::AppHandle) -> Result<bool, String> {
+    let content = app.get_webview("content").ok_or("Окно сайта недоступно")?;
+    let window = content.window();
+    let size = window
+        .inner_size()
+        .map_err(|err| err.to_string())?
+        .to_logical::<f64>(window.scale_factor().map_err(|err| err.to_string())?);
+    if app.get_webview("shikimori-overlay").is_none() {
+        let overlay = window
+            .add_child(
+                tauri::webview::WebviewBuilder::new(
+                    "shikimori-overlay",
+                    tauri::WebviewUrl::App("shikimori.html".into()),
+                )
+                .transparent(true)
+                .additional_browser_args(browser_args_for_platform()),
+                tauri::LogicalPosition::new(0.0, TOOLBAR_HEIGHT),
+                tauri::LogicalSize::new(size.width, (size.height - TOOLBAR_HEIGHT).max(1.0)),
+            )
+            .map_err(|err| err.to_string())?;
+        overlay.hide().map_err(|err| err.to_string())?;
+    }
+    if app.get_webview("shikimori").is_none() {
+        let site = window
+            .add_child(
+                tauri::webview::WebviewBuilder::new(
+                    "shikimori",
+                    tauri::WebviewUrl::External("https://shikimori.io/".parse().unwrap()),
+                )
+                .initialization_script(include_str!("../scripts/shikimori.js"))
+                .additional_browser_args(browser_args_for_platform())
+                .on_navigation(shikimori_navigation_allowed)
+                .on_new_window(|url, _features| shikimori_new_window_response(&url)),
+                tauri::LogicalPosition::new(
+                    SHIKIMORI_MARGIN,
+                    TOOLBAR_HEIGHT + SHIKIMORI_MARGIN + SHIKIMORI_HEADER,
+                ),
+                tauri::LogicalSize::new(
+                    (size.width - SHIKIMORI_MARGIN * 2.0).max(1.0),
+                    (size.height - TOOLBAR_HEIGHT - SHIKIMORI_MARGIN * 2.0 - SHIKIMORI_HEADER)
+                        .max(1.0),
+                ),
+            )
+            .map_err(|err| err.to_string())?;
+        site.hide().map_err(|err| err.to_string())?;
+    }
+    let overlay = app
+        .get_webview("shikimori-overlay")
+        .ok_or("Панель Shikimori недоступна")?;
+    let site = app.get_webview("shikimori").ok_or("Shikimori недоступен")?;
+    #[cfg(target_os = "linux")]
+    {
+        attach_linux_shikimori(&content).await?;
+        attach_linux_shikimori(&overlay).await?;
+        attach_linux_shikimori(&site).await?;
+    }
+    layout_webviews(&window).map_err(|err| err.to_string())?;
+    overlay.show().map_err(|err| err.to_string())?;
+    site.show().map_err(|err| err.to_string())?;
+    app.state::<ShikimoriState>()
+        .visible
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    report_shikimori(app, true);
+    let _ = site.set_focus();
+    Ok(true)
+}
+
+#[tauri::command]
+async fn shikimori_action(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+    action: String,
+) -> Result<bool, String> {
+    if webview.label() != "shikimori-overlay" {
+        ensure_toolbar_access(&webview)?;
+    }
+    let state = app.state::<ShikimoriState>();
+    let _operation = state.operation.lock().await;
+    let visible = state.visible.load(std::sync::atomic::Ordering::Relaxed);
+    match action.as_str() {
+        "status" => Ok(visible),
+        "close" => unload_shikimori(&app),
+        "toggle" if visible => unload_shikimori(&app),
+        "toggle" => match show_shikimori(&app).await {
+            Ok(visible) => Ok(visible),
+            Err(err) => {
+                let _ = unload_shikimori(&app);
+                Err(err)
+            }
+        },
+        "back" | "forward" | "reload" => {
+            let site = app
+                .get_webview("shikimori")
+                .ok_or("Shikimori ещё не открыт")?;
+            let script = match action.as_str() {
+                "back" => "window.history.back()",
+                "forward" => "window.history.forward()",
+                _ => "window.location.reload()",
+            };
+            site.eval(script).map_err(|err| err.to_string())?;
+            Ok(visible)
+        }
+        _ => Err("Неизвестное действие Shikimori".into()),
+    }
+}
+
+#[tauri::command]
+async fn close_shikimori(app: tauri::AppHandle, webview: tauri::Webview) -> Result<bool, String> {
+    if webview.label() != "shikimori" {
+        return Err("Эта команда доступна только Shikimori".into());
+    }
+    let state = app.state::<ShikimoriState>();
+    let _operation = state.operation.lock().await;
+    unload_shikimori(&app)
 }
 
 #[tauri::command]
@@ -653,6 +917,7 @@ pub fn run() {
             fullscreen: std::sync::atomic::AtomicBool::new(false),
         })
         .manage(DiscordState(Mutex::new(None)))
+        .manage(ShikimoriState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
@@ -883,7 +1148,9 @@ pub fn run() {
             open_in_mpv,
             check_update,
             install_update,
-            get_app_version
+            get_app_version,
+            shikimori_action,
+            close_shikimori
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

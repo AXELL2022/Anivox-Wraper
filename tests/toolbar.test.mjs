@@ -87,12 +87,12 @@ test('Updater shows badge on available update and displays progress on click', a
   });
 
   assert.equal(element('#updater').style.display, undefined);
-  listeners.get('update-available')({ payload: { version: '0.2.1', body: 'New features' } });
+  listeners.get('update-available')({ payload: { version: '0.2.2', body: 'New features' } });
   assert.equal(element('#updater').style.display, 'inline-flex');
-  assert.equal(element('#updater').textContent, '✨ v0.2.1');
-
-  listeners.get('update-available')({ payload: { version: 'v0.2.2', body: 'Bug fixes' } });
   assert.equal(element('#updater').textContent, '✨ v0.2.2');
+
+  listeners.get('update-available')({ payload: { version: 'v0.2.3', body: 'Bug fixes' } });
+  assert.equal(element('#updater').textContent, '✨ v0.2.3');
 
   await element('#updater').handlers.click();
   assert.equal(installCalled, true);
@@ -108,8 +108,56 @@ test('Updater shows badge on available update and displays progress on click', a
 test('Brand element displays application version from get_app_version', async () => {
   const { element } = await toolbar(async command => {
     if (command === 'get_vpn_status') return false;
-    if (command === 'get_app_version') return 'v0.2.1';
+    if (command === 'get_app_version') return 'v0.2.2';
   });
-  assert.equal(element('.brand').textContent, 'v0.2.1');
+  assert.equal(element('.brand').textContent, 'v0.2.2');
+});
+
+test('Shikimori toggles its overlay without navigating the main site', async () => {
+  let visible = false;
+  const actions = [];
+  const { element } = await toolbar(async (command, args) => {
+    if (command === 'get_vpn_status') return false;
+    if (command === 'shikimori_action') {
+      if (args.action === 'toggle') { actions.push(args.action); visible = !visible; }
+      return visible;
+    }
+    if (command === 'browser_action') throw new Error('Main site must stay loaded');
+  });
+  const button = element('#shikimori');
+  assert.equal(typeof button.handlers.click, 'function');
+  await button.handlers.click();
+  assert.equal(button.attributes['aria-pressed'], 'true');
+  await button.handlers.click();
+  assert.equal(button.attributes['aria-pressed'], 'false');
+  assert.equal(button.disabled, false);
+  assert.deepEqual(actions, ['toggle', 'toggle']);
+});
+
+test('Shikimori can be retried after an opening failure', async () => {
+  let attempts = 0;
+  const { element } = await toolbar(async (command, args) => {
+    if (command === 'get_vpn_status') return false;
+    if (command === 'shikimori_action' && args.action === 'toggle') {
+      if (++attempts === 1) throw new Error('Webview failed');
+      return true;
+    }
+    return false;
+  });
+  const button = element('#shikimori');
+  assert.equal(typeof button.handlers.click, 'function');
+  await button.handlers.click();
+  assert.equal(button.disabled, false);
+  assert.equal(button.attributes['aria-pressed'], 'false');
+  assert.match(element('#status').textContent, /Webview failed/);
+  await button.handlers.click();
+  assert.equal(button.attributes['aria-pressed'], 'true');
+});
+
+test('Closing Shikimori from the overlay updates the toolbar button', async () => {
+  const { element, listeners } = await toolbar(async command => command === 'shikimori_action');
+  assert.equal(typeof listeners.get('shikimori-status'), 'function');
+  listeners.get('shikimori-status')({ payload: { visible: false } });
+  assert.equal(element('#shikimori').attributes['aria-pressed'], 'false');
 });
 

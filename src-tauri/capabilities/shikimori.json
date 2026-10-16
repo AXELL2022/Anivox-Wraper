@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "shikimori",
+  "description": "Shikimori may only close its own overlay",
+  "local": false,
+  "webviews": ["shikimori"],
+  "remote": { "urls": ["https://shikimori.io/*"] },
+  "permissions": ["allow-close-shikimori"]
+}

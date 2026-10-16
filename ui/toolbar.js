@@ -4,6 +4,7 @@ const toolbarRoot = document.querySelector('#anivox-toolbar-host')?.shadowRoot ?
 const vpn = toolbarRoot.querySelector('#vpn');
 const vpnLabel = toolbarRoot.querySelector('#vpn-label');
 const mpv = toolbarRoot.querySelector('#mpv');
+const shikimori = toolbarRoot.querySelector('#shikimori');
 const updater = toolbarRoot.querySelector('#updater');
 const status = toolbarRoot.querySelector('#status');
 const brand = toolbarRoot.querySelector('.brand');
@@ -11,6 +12,26 @@ let vpnActive = false;
 let vpnPending = false;
 let updatePending = false;
 let mpvTimer;
+let shikimoriPending = false;
+
+function renderShikimori(visible) {
+  shikimori.setAttribute('aria-pressed', String(visible));
+  shikimori.title = visible ? 'Закрыть Shikimori' : 'Открыть Shikimori поверх сайта';
+}
+
+shikimori.addEventListener('click', async () => {
+  if (shikimoriPending) return;
+  shikimoriPending = true;
+  shikimori.disabled = true;
+  try {
+    renderShikimori(await invoke('shikimori_action', { action: 'toggle' }));
+  } catch (err) {
+    message(`Не удалось открыть Shikimori: ${err}`, true);
+  } finally {
+    shikimoriPending = false;
+    shikimori.disabled = false;
+  }
+});
 
 function message(text, error = false) {
   status.textContent = text;
@@ -113,6 +134,9 @@ if (updater) {
 }
 
 async function init() {
+  await listen('shikimori-status', ({ payload }) => renderShikimori(payload.visible));
+  invoke('shikimori_action', { action: 'status' }).then(renderShikimori).catch(() => {});
+
   await listen('player-status', ({ payload }) => {
     clearTimeout(mpvTimer);
     mpv.textContent = payload.text;

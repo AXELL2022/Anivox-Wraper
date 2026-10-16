@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-shikimori-controls"
+description = "Allows the application toolbar to open, close and navigate the Shikimori overlay"
+commands.allow = ["shikimori_action"]
+
+[[permission]]
+identifier = "allow-close-shikimori"
+description = "Allows Shikimori to unload its own overlay on Escape"
+commands.allow = ["close_shikimori"]
