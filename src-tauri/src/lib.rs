@@ -1,7 +1,7 @@
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 use std::process::Command;
 use std::sync::Mutex;
-use tauri::{Emitter, Manager, State};
+use tauri::{Emitter, Manager};
 #[cfg(target_os = "linux")]
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
@@ -10,6 +10,8 @@ const TOOLBAR_HEIGHT: f64 = 40.0;
 const SHIKIMORI_MARGIN: f64 = 16.0;
 const SHIKIMORI_HEADER: f64 = 40.0;
 
+#[cfg(test)]
+mod discord_tests;
 #[cfg(test)]
 mod shikimori_tests;
 
@@ -737,40 +739,126 @@ fn ensure_toolbar_access(webview: &tauri::Webview) -> Result<(), String> {
     }
 }
 
-#[tauri::command]
-fn set_discord_rpc(
-    state: State<'_, DiscordState>,
-    details: Option<String>,
-    state_text: Option<String>,
+fn send_discord_activity<C>(
+    client: &mut Option<C>,
+    connect: impl FnOnce() -> Result<C, String>,
+    send: impl FnOnce(&mut C) -> Result<(), String>,
 ) -> Result<(), String> {
-    let discord_state: &DiscordState = state.inner();
-    let mut client_guard = discord_state.0.lock().unwrap();
-
-    if let Some(client) = client_guard.as_mut() {
-        let mut activity = activity::Activity::new();
-
-        // We need to keep the strings alive if we are going to use them in the activity
-        let details = details.unwrap_or_default();
-        let state_text = state_text.unwrap_or_default();
-
-        if !details.is_empty() {
-            activity = activity.details(&details);
-        }
-        if !state_text.is_empty() {
-            activity = activity.state(&state_text);
-        }
-
-        activity = activity.assets(
-            activity::Assets::new()
-                .large_image("logo")
-                .large_text("Anivox"),
-        );
-
-        client.set_activity(activity).map_err(|e| e.to_string())?;
-        Ok(())
-    } else {
-        Err("Discord client not connected".to_string())
+    if client.is_none() {
+        *client = Some(connect()?);
     }
+    let result = send(client.as_mut().unwrap());
+    if result.is_err() {
+        // Discard the broken transport; the next heartbeat establishes a new one.
+        *client = None;
+    }
+    result
+}
+
+#[derive(Default, serde::Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct DiscordPresence {
+    details: String,
+    state_text: String,
+    poster_url: Option<String>,
+    anime_url: Option<String>,
+    shikimori_url: Option<String>,
+    end_timestamp: Option<i64>,
+}
+
+fn discord_public_url<'a>(value: Option<&'a str>, host: Option<&str>) -> Option<&'a str> {
+    let value = value?;
+    let url = tauri::Url::parse(value).ok()?;
+    if value.len() > 512
+        || url.scheme() != "https"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || host.is_some_and(|host| url.host_str() != Some(host))
+    {
+        return None;
+    }
+    Some(value)
+}
+
+fn build_discord_activity(presence: &DiscordPresence) -> activity::Activity<'_> {
+    let mut activity = activity::Activity::new().activity_type(activity::ActivityType::Watching);
+    if !presence.details.is_empty() {
+        activity = activity.details(&presence.details);
+    }
+    if !presence.state_text.is_empty() {
+        activity = activity.state(&presence.state_text);
+    }
+    let poster =
+        discord_public_url(presence.poster_url.as_deref(), None).filter(|url| url.len() <= 256);
+    let mut assets = activity::Assets::new()
+        .large_image(poster.unwrap_or("logo"))
+        .large_text(if presence.details.is_empty() {
+            "Anivox"
+        } else {
+            &presence.details
+        });
+    if poster.is_some() {
+        assets = assets.small_image("logo").small_text("Anivox");
+    }
+    activity = activity.assets(assets);
+    let mut buttons = Vec::new();
+    if let Some(url) = discord_public_url(presence.anime_url.as_deref(), Some("anivox.fun")) {
+        buttons.push(activity::Button::new("Открыть аниме", url));
+    }
+    if let Some(url) = discord_public_url(presence.shikimori_url.as_deref(), Some("shikimori.io")) {
+        buttons.push(activity::Button::new("Shikimori", url));
+    }
+    if !buttons.is_empty() {
+        activity = activity.buttons(buttons);
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    if let Some(end) = presence
+        .end_timestamp
+        .filter(|end| *end > now && *end <= now + 7 * 86400)
+    {
+        activity = activity.timestamps(activity::Timestamps::new().end(end));
+    }
+    activity
+}
+
+fn update_discord_presence(
+    client: &mut Option<DiscordIpcClient>,
+    presence: &DiscordPresence,
+) -> Result<(), String> {
+    send_discord_activity(
+        client,
+        || {
+            let mut client =
+                DiscordIpcClient::new("1504862803335315609").map_err(|e| e.to_string())?;
+            client.connect().map_err(|e| e.to_string())?;
+            Ok(client)
+        },
+        |client| {
+            client
+                .set_activity(build_discord_activity(presence))
+                .map_err(|e| e.to_string())
+        },
+    )
+}
+
+#[tauri::command]
+async fn set_discord_rpc(
+    app: tauri::AppHandle,
+    mut presence: DiscordPresence,
+) -> Result<(), String> {
+    presence.details = presence.details.chars().take(128).collect();
+    presence.state_text = presence.state_text.chars().take(128).collect();
+    // Discord's handshake performs blocking pipe/socket I/O without a timeout.
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<DiscordState>();
+        let mut client = state.inner().0.lock().map_err(|e| e.to_string())?;
+        update_discord_presence(&mut client, &presence)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -868,12 +956,25 @@ async fn check_update(app: tauri::AppHandle) -> Result<UpdateInfo, String> {
     }
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum UpdateInstallOutcome {
+    #[cfg(target_os = "linux")]
+    ReleasePage,
+    NoUpdate,
+}
+
 #[tauri::command]
-async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
+async fn install_update(app: tauri::AppHandle) -> Result<UpdateInstallOutcome, String> {
     #[cfg(target_os = "linux")]
     if std::env::var_os("APPIMAGE").is_none() {
-        let _ = app.opener().open_url("https://github.com/AXELL2022/Anivox-Wraper/releases/latest", None::<&str>);
-        return Ok(());
+        app.opener()
+            .open_url(
+                "https://github.com/AXELL2022/Anivox-Wraper/releases/latest",
+                None::<&str>,
+            )
+            .map_err(|e| e.to_string())?;
+        return Ok(UpdateInstallOutcome::ReleasePage);
     }
 
     let updater = app.updater().map_err(|e| e.to_string())?;
@@ -906,7 +1007,7 @@ async fn install_update(app: tauri::AppHandle) -> Result<(), String> {
 
         app.restart();
     }
-    Ok(())
+    Ok(UpdateInstallOutcome::NoUpdate)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1034,22 +1135,14 @@ pub fn run() {
 
             let handle = app.handle().clone();
             // Initialize Discord RPC on startup
-            tauri::async_runtime::spawn(async move {
-                // TODO: Replace with your actual Discord Application ID
-                let client_id = "1504862803335315609"; 
-                if let Ok(mut client) = DiscordIpcClient::new(client_id) {
-                    if client.connect().is_ok() {
-                        let _ = client.set_activity(activity::Activity::new()
-                            .details("Смотрит аниме")
-                            .state("На главной")
-                            .assets(activity::Assets::new()
-                                .large_image("logo")
-                                .large_text("Anivox"))
-                        );
-                        let state = handle.state::<DiscordState>();
-                        *state.inner().0.lock().unwrap() = Some(client);
-                    }
-                }
+            tauri::async_runtime::spawn_blocking(move || {
+                let state = handle.state::<DiscordState>();
+                let mut client = state.inner().0.lock().unwrap();
+                let _ = update_discord_presence(&mut client, &DiscordPresence {
+                    details: "Anivox".into(),
+                    state_text: "На главной".into(),
+                    ..Default::default()
+                });
             });
 
             // Check for application updates in the background 3 seconds after launch

@@ -10,6 +10,7 @@
     let episodePending = false;
     let staleMediaUrls = new Set();
     let stalePlayerContexts = new WeakMap();
+    let staleVideoSources = new WeakMap();
     let mediaPage = pageKey();
     let mediaBase = document.baseURI || location.href;
     let staleBase = mediaBase;
@@ -52,8 +53,10 @@
         };
         rememberLinks(apiLinks);
         stalePlayerContexts = new WeakMap();
+        staleVideoSources = new WeakMap();
         for (const el of playerElements()) {
             if (!el) continue;
+            staleVideoSources.set(el, el.currentSrc || el.src || '');
             old.push(el.currentSrc, el.src);
             const ctx = playerContext(el);
             if (ctx) {
@@ -549,26 +552,116 @@
         setupCommonStyles();
     }
 
-    // Discord RPC logic with deduplication and debouncing
-    let lastRpcTitle = '';
+    let discordBufferingVideo = null;
+    // Discord uses the current anime component and native video state, never media URLs.
+    function discordPresence() {
+        const page = new URL(location.href);
+        const routeId = /^\/anime\/(\d+)(?:-|\/|$)/.exec(page.pathname)?.[1];
+        const animeCtx = playerContext(document.querySelector('.anime'));
+        const anime = animeCtx?.anime;
+        const stale = routeId && anime?.id != null && String(anime.id) !== routeId;
+        const isAnime = !!routeId && !stale;
+        const text = value => typeof value === 'string' ? value.trim() : '';
+        const heading = document.querySelector('.anime__info-title-name');
+        // The heading also contains a tooltip with translated/alternative titles.
+        const headingText = text(Array.from(heading?.childNodes || [])
+            .filter(node => node.nodeType === 3).map(node => node.textContent).join(' '));
+        const title = isAnime
+            ? text(anime?.title) || headingText || text(heading?.innerText) || text(heading?.textContent)
+            : '';
+        const fallback = stale ? 'Выбирает аниме' : text(document.title).replace(/\s*[-—|]\s*Anivox.*$/i, '');
+        const details = Array.from(title || fallback || 'Anivox').slice(0, 128).join('');
+        const player = playerContext(document.querySelector('.player-container'));
+        const selectedEpisode = document.querySelector(
+            '.anime__info-episodes-episodes-item.active .anime__info-episodes-episodes-item-info-title');
+        const episode = Number(player?.episode || animeCtx?.episode
+            || /(\d+)\s*серия/i.exec(selectedEpisode?.textContent || '')?.[1]);
+        const selectedSeason = document.querySelector('.anime__info-episodes-seasons-item.active');
+        const season = text(String(anime?.season_label || '')).replace(/\s*сезон\s*$/i, '')
+            || /(\d+)\s*сезон/i.exec(selectedSeason?.textContent || '')?.[1];
+        const video = document.querySelector('video.video-element') || document.querySelector('video');
+        const currentVideo = isAnime && !episodePending && video
+            && staleVideoSources.get(video) !== (video.currentSrc || video.src || '')
+            && !staleMediaUrls.has(resolveUrl(video.currentSrc || video.src));
+        const parts = [];
+        if (isAnime && Number.isInteger(episode) && episode > 0) parts.push(`Серия ${episode}`);
+        if (isAnime && season) parts.push(`Сезон ${season}`);
+        let endTimestamp = null;
+        if (currentVideo) {
+            if (video.ended) parts.push('Просмотр завершён');
+            else if (video.readyState < 2 || discordBufferingVideo === video) parts.push('Загрузка');
+            else if (video.paused) parts.push('На паузе');
+            else if (Number.isFinite(video.duration) && Number.isFinite(video.currentTime)
+                && video.duration > video.currentTime && video.playbackRate > 0) {
+                const remaining = (video.duration - video.currentTime) / video.playbackRate;
+                if (Number.isFinite(remaining) && remaining < 7 * 86400) {
+                    endTimestamp = Math.floor(Date.now() / 1000 + remaining);
+                }
+            }
+        } else {
+            parts.push(isAnime ? 'Выбирает серию' : 'Просматривает сайт');
+        }
+        const posterUrl = isAnime ? resolveUrl(anime?.poster
+            || document.querySelector('.anime__info-poster')?.src) : null;
+        const shikimoriId = Number(anime?.shikimori_id);
+        const shikimoriUrl = !isAnime || !title ? null
+            : Number.isInteger(shikimoriId) && shikimoriId > 0
+                ? `https://shikimori.io/animes/${shikimoriId}`
+                : `https://shikimori.io/animes?search=${encodeURIComponent(title)}`;
+        return {
+            details,
+            stateText: Array.from(parts.join(' · ')).slice(0, 128).join(''),
+            posterUrl,
+            animeUrl: isAnime ? `${page.origin}${page.pathname}` : null,
+            shikimoriUrl,
+            endTimestamp,
+        };
+    }
+
+    // Acknowledged snapshots are deduplicated; heartbeat still probes the connection.
+    let lastRpcKey = '';
     let rpcDebounceTimer = null;
+    let rpcInFlight = false;
 
-    function updateDiscord() {
-        const t = document.title || '';
-        let d = t.endsWith(' - Anivox') ? t.replace(' - Anivox', '') : t;
-        if (!d || d === lastRpcTitle) return;
-        lastRpcTitle = d;
-
+    function updateDiscord(force = false) {
+        const key = JSON.stringify(discordPresence());
         if (rpcDebounceTimer) clearTimeout(rpcDebounceTimer);
-        rpcDebounceTimer = setTimeout(() => {
-            if (window.__TAURI__ && window.__TAURI__.core) {
-                window.__TAURI__.core.invoke('set_discord_rpc', { details: 'Смотрит: ' + d, stateText: 'Anivox' }).catch(() => {});
+        if (!force && key === lastRpcKey) return;
+        rpcDebounceTimer = setTimeout(async () => {
+            if (rpcInFlight || !window.__TAURI__?.core) return;
+            rpcInFlight = true;
+            const presence = discordPresence();
+            const sentKey = JSON.stringify(presence);
+            try {
+                await window.__TAURI__.core.invoke('set_discord_rpc', { presence });
+                lastRpcKey = sentKey;
+            } catch (_) {
+                // Leave the title unacknowledged so a later update can retry it.
+            } finally {
+                rpcInFlight = false;
+                if (JSON.stringify(discordPresence()) !== sentKey) updateDiscord();
             }
         }, 1000);
     }
-    const o = new MutationObserver(updateDiscord);
+    const o = new MutationObserver(() => updateDiscord());
     const t = document.querySelector('title');
     if (t) o.observe(t, { subtree: true, characterData: true, childList: true });
-    setInterval(updateDiscord, 30000);
+    for (const event of ['play', 'playing', 'canplay', 'waiting', 'stalled', 'pause', 'seeking',
+        'seeked', 'loadedmetadata', 'durationchange', 'ratechange', 'ended', 'emptied']) {
+        document.addEventListener(event, e => {
+            if (e.target === document.querySelector('video.video-element')
+                || e.target === document.querySelector('video')) {
+                if (event === 'waiting') discordBufferingVideo = e.target;
+                else if (event === 'stalled') {
+                    if (e.target.readyState < 3) discordBufferingVideo = e.target;
+                } else if (['playing', 'canplay', 'pause', 'emptied'].includes(event)) {
+                    discordBufferingVideo = null;
+                }
+                updateDiscord();
+            }
+        }, true);
+    }
+    // Probe even an unchanged status to recover after Discord starts or restarts.
+    setInterval(() => updateDiscord(true), 30000);
     updateDiscord();
 })();

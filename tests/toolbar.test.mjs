@@ -83,7 +83,7 @@ test('Updater shows badge on available update and displays progress on click', a
   const { element, listeners } = await toolbar(async command => {
     if (command === 'get_vpn_status') return false;
     if (command === 'check_update') return { available: false };
-    if (command === 'install_update') { installCalled = true; return; }
+    if (command === 'install_update') { installCalled = true; return new Promise(() => {}); }
   });
 
   assert.equal(element('#updater').style.display, undefined);
@@ -94,7 +94,7 @@ test('Updater shows badge on available update and displays progress on click', a
   listeners.get('update-available')({ payload: { version: 'v0.2.3', body: 'Bug fixes' } });
   assert.equal(element('#updater').textContent, '✨ v0.2.3');
 
-  await element('#updater').handlers.click();
+  element('#updater').handlers.click();
   assert.equal(installCalled, true);
   assert.equal(element('#updater').disabled, true);
 
@@ -103,6 +103,53 @@ test('Updater shows badge on available update and displays progress on click', a
 
   listeners.get('update-finished')();
   assert.equal(element('#updater').textContent, 'Перезапуск…');
+});
+
+for (const result of ['release_page', 'no_update', 'error']) {
+  test(`Updater restores its button when installation returns ${result}`, async () => {
+    let attempts = 0;
+    const { element, listeners } = await toolbar(async command => {
+      if (command === 'get_vpn_status') return false;
+      if (command === 'install_update') {
+        attempts++;
+        if (result === 'error') throw new Error('Download failed');
+        return result;
+      }
+    });
+    listeners.get('update-available')({ payload: { version: '0.2.3', body: 'Fixes' } });
+    await element('#updater').handlers.click();
+    assert.equal(element('#updater').disabled, false);
+    assert.equal(element('#updater').textContent, '✨ v0.2.3');
+    assert.doesNotMatch(element('#status').textContent, /Загрузка обновления…/);
+    await element('#updater').handlers.click();
+    assert.equal(attempts, 2);
+  });
+}
+
+test('Updater keeps progress during a repeated availability event and restores the latest badge', async () => {
+  let finish;
+  let attempts = 0;
+  const { element, listeners } = await toolbar(async command => {
+    if (command === 'get_vpn_status') return false;
+    if (command === 'install_update') {
+      attempts++;
+      return await new Promise(resolve => { finish = resolve; });
+    }
+  });
+  listeners.get('update-available')({ payload: { version: '0.2.3' } });
+  const click = element('#updater').handlers.click();
+  await element('#updater').handlers.click();
+  assert.equal(attempts, 1);
+  listeners.get('update-progress')({ payload: { percent: 42 } });
+  listeners.get('update-available')({ payload: { version: '0.2.4' } });
+  assert.equal(element('#updater').textContent, 'Загрузка… 42%');
+  finish('no_update');
+  await click;
+  assert.equal(element('#updater').disabled, false);
+  assert.equal(element('#updater').textContent, '✨ v0.2.4');
+  listeners.get('update-progress')({ payload: { percent: 99 } });
+  listeners.get('update-finished')();
+  assert.equal(element('#updater').textContent, '✨ v0.2.4');
 });
 
 test('Brand element displays application version from get_app_version', async () => {

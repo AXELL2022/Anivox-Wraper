@@ -148,9 +148,29 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
           REPO_NAME: ${{ github.repository }}
 
+      - name: Extract release notes from changelog
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          version = os.environ["RELEASE_TAG"].removeprefix("v")
+          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
+          pattern = rf"^## \[{re.escape(version)}\][^\n]*\n.*?(?=^## |\Z)"
+          section = re.search(pattern, changelog, re.MULTILINE | re.DOTALL)
+          if section is None:
+              raise SystemExit(f"Missing changelog entry for {version}")
+          notes = re.sub(r"\n---\s*\Z", "", section.group(0)).strip()
+          Path("release-notes.md").write_text(notes + "\n", encoding="utf-8")
+          PY
+
       - name: Publish GitHub Release assets
         uses: softprops/action-gh-release@v2
         with:
+          body_path: release-notes.md
           files: dist-release/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

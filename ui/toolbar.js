@@ -11,6 +11,7 @@ const brand = toolbarRoot.querySelector('.brand');
 let vpnActive = false;
 let vpnPending = false;
 let updatePending = false;
+let availableUpdate = null;
 let mpvTimer;
 let shikimoriPending = false;
 
@@ -110,6 +111,8 @@ mpv.addEventListener('click', async () => {
 
 function showUpdateBadge(version, body) {
   if (!updater) return;
+  availableUpdate = { version, body };
+  if (updatePending) return;
   const cleanVersion = String(version || '').replace(/^v/, '');
   updater.style.display = 'inline-flex';
   updater.textContent = `✨ v${cleanVersion}`;
@@ -124,11 +127,16 @@ if (updater) {
     updater.textContent = 'Загрузка… 0%';
     message('Загрузка обновления…');
     try {
-      await invoke('install_update');
+      const result = await invoke('install_update');
+      message(result === 'release_page'
+        ? 'Открыта страница релиза. Установите обновление вручную.'
+        : 'Обновление больше не доступно. Повторите проверку позже.');
     } catch (err) {
+      message(`Ошибка обновления: ${err}`, true);
+    } finally {
       updatePending = false;
       updater.disabled = false;
-      message(`Ошибка обновления: ${err}`, true);
+      if (availableUpdate) showUpdateBadge(availableUpdate.version, availableUpdate.body);
     }
   });
 }
@@ -160,7 +168,7 @@ async function init() {
   });
 
   await listen('update-finished', () => {
-    if (updater) {
+    if (updater && updatePending) {
       updater.textContent = 'Перезапуск…';
       message('Обновление готово. Перезапуск…');
     }
