@@ -155,9 +155,9 @@ test('Updater keeps progress during a repeated availability event and restores t
 test('Brand element displays application version from get_app_version', async () => {
   const { element } = await toolbar(async command => {
     if (command === 'get_vpn_status') return false;
-    if (command === 'get_app_version') return 'v0.2.2';
+    if (command === 'get_app_version') return 'v0.2.4';
   });
-  assert.equal(element('.brand').textContent, 'v0.2.2');
+  assert.equal(element('.brand').textContent, 'v0.2.4');
 });
 
 test('Shikimori toggles its overlay without navigating the main site', async () => {
