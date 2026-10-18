@@ -1,6 +1,20 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+export function extractReleaseNotes(changelog, tag) {
+  const version = tag.replace(/^v/, '');
+  const lines = changelog.replace(/\r\n?/g, '\n').split('\n');
+  const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const heading = new RegExp(`^##[ \\t]+\\[${escaped}\\](?:[ \\t]|$)`);
+  const start = lines.findIndex(line => heading.test(line));
+  if (start < 0) throw new Error(`Missing changelog entry for ${version}`);
+  let end = start + 1;
+  while (end < lines.length && !/^##\s/.test(lines[end])) end++;
+  const body = lines.slice(start + 1, end).join('\n').replace(/\n?---\s*$/, '').trim();
+  if (!body || !body.replace(/[\s*-]/g, '')) throw new Error(`Empty changelog entry for ${version}`);
+  return `${lines[start]}\n${body}`;
+}
+
 export function findFiles(dir) {
   const results = [];
   if (!fs.existsSync(dir)) return results;
@@ -21,7 +35,10 @@ export function generateManifest({
   outputDir = 'dist-release',
   tag = process.env.RELEASE_TAG || 'v0.2.4',
   repo = process.env.REPO_NAME || 'AXELL2022/Anivox-Wraper',
+  notesPath = 'release-notes.md',
 } = {}) {
+  const notes = fs.readFileSync(notesPath, 'utf8');
+  if (!notes.trim()) throw new Error('Empty release notes');
   const version = tag.replace(/^v/, '');
   fs.mkdirSync(outputDir, { recursive: true });
 
@@ -73,7 +90,7 @@ export function generateManifest({
 
   const manifest = {
     version,
-    notes: `Release ${tag}`,
+    notes,
     pub_date: new Date().toISOString(),
     platforms,
   };
@@ -88,5 +105,11 @@ export function generateManifest({
 
 // Execute directly if run as a script
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(import.meta.filename || '')) {
-  generateManifest();
+  if (process.argv.includes('--extract-notes')) {
+    const tag = process.env.RELEASE_TAG;
+    if (!tag) throw new Error('RELEASE_TAG is required');
+    fs.writeFileSync('release-notes.md', extractReleaseNotes(fs.readFileSync('CHANGELOG.md', 'utf8'), tag) + '\n', 'utf8');
+  } else {
+    generateManifest();
+  }
 }

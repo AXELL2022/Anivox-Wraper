@@ -211,8 +211,8 @@
     // The local toolbar is separate; only player hooks belong in the site.
     if (window !== window.top || location.origin !== 'https://anivox.fun') return;
 
-    function setBtnStatus(text, color, resetAfterMs) {
-        window.__TAURI__.core.invoke('report_player_status', { text, color, resetAfterMs }).catch(console.error);
+    function setBtnStatus(text, color, resetAfterMs, detail = null) {
+        window.__TAURI__.core.invoke('report_player_status', { text, color, resetAfterMs, detail }).catch(console.error);
     }
 
     function parseQualityHeight(q) {
@@ -307,9 +307,6 @@
         }
 
         const startTime = (video && video.currentTime) ? video.currentTime : (info.time || 0);
-        if (video && !video.paused) {
-            video.pause();
-        }
 
         const qLabel = info.quality && info.quality !== 'auto' ? ` (${info.quality})` : ' (MAX)';
         setBtnStatus(`▶ Запуск MPV${qLabel}...`, '#69f0ae', 0);
@@ -327,13 +324,14 @@
                     subUrl: lastSubUrl || null,
                     token: token
                 });
+                if (video && !video.paused) video.pause();
                 setBtnStatus(`✔ Запущен${qLabel}!`, '#69f0ae', 2500);
             } else {
                 throw new Error('Tauri API недоступен');
             }
         } catch (err) {
             console.error('[Anivox-MPV] Launch error:', err);
-            setBtnStatus('⚠ Ошибка!', '#ff5252', 3000);
+            setBtnStatus('⚠ Ошибка!', '#ff5252', 3000, `MPV: ${String(err)}`);
         }
     }
 

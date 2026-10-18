@@ -11,7 +11,7 @@ function deferred() {
   return { promise, resolve };
 }
 
-function player({ video = null, context = null } = {}) {
+function player({ video = null, context = null, launchMpv = async () => {} } = {}) {
   let page = new URL('https://anivox.fun/anime/show/');
   const responses = new Map();
   const calls = [];
@@ -39,7 +39,7 @@ function player({ video = null, context = null } = {}) {
   };
   const window = {
     history,
-    __TAURI__: { core: { invoke: async (command, args) => { calls.push({ command, args }); } } },
+    __TAURI__: { core: { invoke: async (command, args) => { calls.push({ command, args }); if (command === 'open_in_mpv') return await launchMpv(args); } } },
     async fetch(input) {
       const url = new URL(typeof input === 'string' ? input : input.url || input.href, page).href;
       return await responses.get(url) || { ok: true, clone: () => ({ json: async () => null }) };
@@ -293,4 +293,29 @@ test('Vue links updated in place become playable after an episode change', async
   assert.equal(await app.launch(), undefined);
   context.links[1080] = 'new.m3u8';
   assert.equal((await app.launch())?.url, 'https://anivox.fun/anime/show/new.m3u8');
+});
+
+test('MPV pauses embedded playback only after successful launch', async () => {
+  const pending = deferred();
+  let pauses = 0;
+  const video = { currentTime: 42, paused: false, pause() { pauses++; } };
+  const app = player({ video, launchMpv: () => pending.promise });
+  await app.fetch('/api/episodes/1', { links: { 1080: '/current.m3u8' } });
+  const launch = app.launch();
+  await flush();
+  assert.equal(pauses, 0);
+  pending.resolve();
+  const args = await launch;
+  assert.equal(pauses, 1);
+  assert.equal(args.startTime, 42);
+});
+
+test('Failed MPV launch leaves embedded playback running', async () => {
+  let pauses = 0;
+  const app = player({ video: { currentTime: 5, paused: false, pause() { pauses++; } }, launchMpv: async () => { throw new Error('not installed'); } });
+  await app.fetch('/api/episodes/1', { links: { 1080: '/current.m3u8' } });
+  await app.launch();
+  assert.equal(pauses, 0);
+  const errorStatus = app.calls.filter(call => call.command === 'report_player_status').at(-1)?.args;
+  assert.match(errorStatus.detail, /not installed/);
 });

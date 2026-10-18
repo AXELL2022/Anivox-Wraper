@@ -3,7 +3,8 @@ src-tauri/target/
 node_modules/
 *.pkg.tar.zst
 pkg/
-/src/
 /tmp
 backup_linux/
 *.log
+.superpowers/
+/actions-runner/

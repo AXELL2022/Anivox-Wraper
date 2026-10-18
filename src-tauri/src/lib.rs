@@ -1,7 +1,9 @@
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
+use tauri_plugin_dialog::DialogExt;
 #[cfg(target_os = "linux")]
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
@@ -12,6 +14,8 @@ const SHIKIMORI_HEADER: f64 = 40.0;
 
 #[cfg(test)]
 mod discord_tests;
+#[cfg(test)]
+mod mpv_tests;
 #[cfg(test)]
 mod shikimori_tests;
 
@@ -33,6 +37,33 @@ fn browser_args_for_platform() -> &'static str {
     {
         ""
     }
+}
+
+#[cfg(target_os = "windows")]
+fn set_windows_taskbar_icon(window: &tauri::Window) -> Result<(), Box<dyn std::error::Error>> {
+    use windows::Win32::Foundation::{LPARAM, WPARAM};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SendMessageW, ICON_BIG, ICON_SMALL, WM_GETICON, WM_SETICON,
+    };
+
+    let hwnd = window.hwnd()?;
+    // Tauri/Tao assigns the app icon to ICON_SMALL only. Windows can use a
+    // different shell fallback for the taskbar unless ICON_BIG is explicit.
+    let icon = unsafe { SendMessageW(hwnd, WM_GETICON, Some(WPARAM(ICON_SMALL as usize)), None) };
+    if icon.0 == 0 {
+        return Err(std::io::Error::other("Application window icon is missing").into());
+    }
+    // Borrow the same HICON: Tao owns it for the window's lifetime. Do not
+    // destroy it here or the title-bar and taskbar icons would become invalid.
+    unsafe {
+        SendMessageW(
+            hwnd,
+            WM_SETICON,
+            Some(WPARAM(ICON_BIG as usize)),
+            Some(LPARAM(icon.0)),
+        );
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "linux")]
@@ -402,6 +433,7 @@ fn report_player_status(
     text: String,
     color: String,
     reset_after_ms: u64,
+    detail: Option<String>,
 ) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     let target = "content";
@@ -411,7 +443,8 @@ fn report_player_status(
         target,
         "player-status",
         serde_json::json!({
-            "text": text, "color": color, "resetAfterMs": reset_after_ms
+            "text": text, "color": color, "resetAfterMs": reset_after_ms,
+            "detail": detail
         }),
     )
     .map_err(|err| err.to_string())
@@ -861,27 +894,262 @@ async fn set_discord_rpc(
     .map_err(|e| e.to_string())?
 }
 
+#[derive(Default, serde::Deserialize, serde::Serialize)]
+#[serde(default, rename_all = "camelCase")]
+struct PlayerSettings {
+    mpv_path: Option<String>,
+}
+
+#[derive(Default)]
+struct PlayerSettingsState(Mutex<()>);
+
+fn validate_mpv_path(value: Option<String>) -> Result<Option<String>, String> {
+    let value = value.unwrap_or_default().trim().to_owned();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let path = Path::new(&value);
+    if !path.is_absolute() || !path.is_file() {
+        return Err("Укажите полный путь к существующему исполняемому файлу MPV".into());
+    }
+    Ok(Some(value))
+}
+
+fn load_player_settings(path: &Path) -> Result<PlayerSettings, String> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|err| format!("Не удалось прочитать settings.json: {err}")),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(PlayerSettings::default()),
+        Err(err) => Err(format!("Не удалось открыть настройки: {err}")),
+    }
+}
+
+fn save_player_settings(path: &Path, settings: &PlayerSettings) -> Result<(), String> {
+    use std::io::Write;
+    let settings = PlayerSettings {
+        mpv_path: validate_mpv_path(settings.mpv_path.clone())?,
+    };
+    let parent = path.parent().ok_or("Не определён каталог настроек")?;
+    std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|err| err.to_string())?;
+    let bytes = serde_json::to_vec_pretty(&settings).map_err(|err| err.to_string())?;
+    file.write_all(&bytes).map_err(|err| err.to_string())?;
+    file.as_file().sync_all().map_err(|err| err.to_string())?;
+    file.persist(path)
+        .map_err(|err| format!("Не удалось сохранить настройки: {}", err.error))?;
+    Ok(())
+}
+
+fn player_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_config_dir()
+        .map_err(|err| err.to_string())?
+        .join("settings.json"))
+}
+
+fn player_logs_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_local_data_dir()
+        .map_err(|err| err.to_string())?
+        .join("logs"))
+}
+
+fn is_primary_window(label: &str) -> bool {
+    matches!(label, "main" | "content")
+}
+
+fn is_local_app_url(url: &tauri::Url, dev_url: Option<&tauri::Url>) -> bool {
+    if matches!(
+        (url.scheme(), url.host_str()),
+        ("tauri", Some("localhost")) | ("http" | "https", Some("tauri.localhost"))
+    ) {
+        return true;
+    }
+    // `tauri dev` serves ui/ on a configured loopback origin. It is local
+    // application content too, but arbitrary localhost ports must stay denied.
+    if !cfg!(debug_assertions) || !url.username().is_empty() || url.password().is_some() {
+        return false;
+    }
+    dev_url.is_some_and(|dev| {
+        let loopback = dev.host_str().is_some_and(|host| {
+            host == "localhost"
+                || host
+                    .trim_start_matches('[')
+                    .trim_end_matches(']')
+                    .parse::<std::net::IpAddr>()
+                    .is_ok_and(|ip| ip.is_loopback())
+        });
+        loopback && matches!(dev.scheme(), "http" | "https") && url.origin() == dev.origin()
+    })
+}
+
+fn local_window_access(
+    label: &str,
+    url: &tauri::Url,
+    expected: &str,
+    dev_url: Option<&tauri::Url>,
+) -> Result<(), String> {
+    if label == expected && is_local_app_url(url, dev_url) {
+        Ok(())
+    } else {
+        Err("Эта команда доступна только локальному окну приложения".into())
+    }
+}
+
+fn ensure_local_window(webview: &tauri::Webview, expected: &str) -> Result<(), String> {
+    local_window_access(
+        webview.label(),
+        &webview.url().map_err(|err| err.to_string())?,
+        expected,
+        webview.app_handle().config().build.dev_url.as_ref(),
+    )
+}
+
+fn open_local_window(
+    app: &tauri::AppHandle,
+    label: &str,
+    page: &str,
+    title: &str,
+) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(label) {
+        // A second click while the page is loading must not reveal about:blank.
+        if !window.is_visible().map_err(|err| err.to_string())? {
+            return Ok(());
+        }
+        window.show().map_err(|err| err.to_string())?;
+        window.unminimize().map_err(|err| err.to_string())?;
+        return window.set_focus().map_err(|err| err.to_string());
+    }
+    let navigation_dev_url = app.config().build.dev_url.clone();
+    let loaded_dev_url = navigation_dev_url.clone();
+    tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App(page.into()))
+        .title(title)
+        .inner_size(560.0, 420.0)
+        .min_inner_size(420.0, 320.0)
+        // New WebView2 controllers initially show about:blank. Reveal the
+        // auxiliary window only after its local document has finished loading.
+        .visible(false)
+        .additional_browser_args(browser_args_for_platform())
+        .on_navigation(move |url| is_local_app_url(url, navigation_dev_url.as_ref()))
+        .on_page_load(move |webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
+                && is_local_app_url(payload.url(), loaded_dev_url.as_ref())
+            {
+                let _ = webview.show();
+                let _ = webview.set_focus();
+            }
+        })
+        .build()
+        .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
 #[tauri::command]
-fn open_in_mpv(
+async fn open_settings(app: tauri::AppHandle, webview: tauri::Webview) -> Result<(), String> {
+    ensure_toolbar_access(&webview)?;
+    open_local_window(&app, "settings", "settings.html", "Anivox — настройки")
+}
+
+#[tauri::command]
+fn close_local_window(webview: tauri::Webview) -> Result<(), String> {
+    if !matches!(webview.label(), "settings" | "update-review") {
+        return Err("Недопустимое окно".into());
+    }
+    ensure_local_window(&webview, webview.label())?;
+    webview.window().destroy().map_err(|err| err.to_string())
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PlayerSettingsInfo {
+    mpv_path: Option<String>,
+    log_directory: String,
+}
+
+fn player_settings_info(
+    app: &tauri::AppHandle,
+    settings: PlayerSettings,
+) -> Result<PlayerSettingsInfo, String> {
+    Ok(PlayerSettingsInfo {
+        mpv_path: settings.mpv_path,
+        log_directory: player_logs_path(app)?.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+async fn get_player_settings(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+) -> Result<PlayerSettingsInfo, String> {
+    ensure_local_window(&webview, "settings")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<PlayerSettingsState>();
+        let _guard = state.0.lock().map_err(|err| err.to_string())?;
+        player_settings_info(&app, load_player_settings(&player_settings_path(&app)?)?)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+async fn save_player_settings_command(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+    mpv_path: Option<String>,
+) -> Result<PlayerSettingsInfo, String> {
+    ensure_local_window(&webview, "settings")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<PlayerSettingsState>();
+        let _guard = state.0.lock().map_err(|err| err.to_string())?;
+        let settings = PlayerSettings {
+            mpv_path: validate_mpv_path(mpv_path)?,
+        };
+        save_player_settings(&player_settings_path(&app)?, &settings)?;
+        player_settings_info(&app, settings)
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+#[tauri::command]
+async fn pick_mpv_executable(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+) -> Result<Option<String>, String> {
+    ensure_local_window(&webview, "settings")?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let dialog = app
+            .dialog()
+            .file()
+            .set_title("Выберите MPV")
+            .set_parent(&webview.window());
+        #[cfg(target_os = "windows")]
+        let dialog = dialog.add_filter("Исполняемый файл MPV", &["exe"]);
+        dialog
+            .blocking_pick_file()
+            .map(|file| {
+                file.into_path()
+                    .map(|path| path.to_string_lossy().into_owned())
+                    .map_err(|err| err.to_string())
+            })
+            .transpose()
+    })
+    .await
+    .map_err(|err| err.to_string())?
+}
+
+fn build_mpv_command(
+    settings: &PlayerSettings,
+    log_path: &Path,
     url: String,
     title: Option<String>,
     start_time: Option<f64>,
     sub_url: Option<String>,
     token: Option<String>,
-) -> Result<(), String> {
-    println!("[MPV] Launch requested for URL: {}", url);
-    let mpv_exe = std::path::Path::new(r"F:\Mpv\mpv.exe");
-    let (mpv_path, working_dir) = if mpv_exe.exists() {
-        (r"F:\Mpv\mpv.exe".to_string(), Some(r"F:\Mpv"))
-    } else {
-        ("mpv".to_string(), None)
-    };
-
-    let mut cmd = std::process::Command::new(&mpv_path);
-    if let Some(dir) = working_dir {
-        cmd.current_dir(dir);
-    }
-    cmd.arg(&url);
+) -> Command {
+    let mut cmd = Command::new(settings.mpv_path.as_deref().unwrap_or("mpv"));
 
     if let Some(t) = title {
         if !t.is_empty() {
@@ -906,7 +1174,10 @@ fn open_in_mpv(
     cmd.arg("--http-header-fields-append=Origin: https://anivox.fun");
     if let Some(tok) = token {
         if !tok.is_empty() {
-            cmd.arg(format!("--http-header-fields-append=Authorization: Bearer {}", tok));
+            cmd.arg(format!(
+                "--http-header-fields-append=Authorization: Bearer {}",
+                tok
+            ));
         }
     }
     cmd.arg("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0");
@@ -916,19 +1187,60 @@ fn open_in_mpv(
     cmd.arg("--keep-open=yes");
     cmd.arg("--hls-bitrate=max");
     cmd.arg("--ytdl-format=bestvideo+bestaudio/best");
-    cmd.arg(r"--log-file=F:\Mpv\mpv_debug.log");
-
-    match cmd.spawn() {
-        Ok(child) => {
-            println!("[MPV] Successfully started MPV (PID: {})", child.id());
-            Ok(())
-        }
-        Err(e) => {
-            let msg = format!("Failed to launch MPV at {}: {}", mpv_path, e);
-            eprintln!("[MPV Error] {}", msg);
-            Err(msg)
-        }
+    let mut log_arg = std::ffi::OsString::from("--log-file=");
+    log_arg.push(log_path);
+    cmd.arg(log_arg);
+    cmd.arg("--").arg(url);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
     }
+    cmd
+}
+
+#[tauri::command]
+async fn open_in_mpv(
+    app: tauri::AppHandle,
+    url: String,
+    title: Option<String>,
+    start_time: Option<f64>,
+    sub_url: Option<String>,
+    token: Option<String>,
+) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let settings = {
+            let state = app.state::<PlayerSettingsState>();
+            let _guard = state.0.lock().map_err(|err| err.to_string())?;
+            load_player_settings(&player_settings_path(&app)?)?
+        };
+        let settings = PlayerSettings {
+            mpv_path: validate_mpv_path(settings.mpv_path)?,
+        };
+        let logs = player_logs_path(&app)?;
+        std::fs::create_dir_all(&logs)
+            .map_err(|err| format!("Не удалось создать каталог журналов: {err}"))?;
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let log = logs.join(format!("mpv-{}-{stamp}.log", std::process::id()));
+        let mut command =
+            build_mpv_command(&settings, &log, url, title, start_time, sub_url, token);
+        let mut child = command.spawn().map_err(|err| {
+            format!(
+                "Не удалось запустить MPV ({}): {err}. Выберите плеер в настройках.",
+                command.get_program().to_string_lossy()
+            )
+        })?;
+        // Reap our child on Unix without blocking the UI or owning its lifetime.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
+        Ok(())
+    })
+    .await
+    .map_err(|err| err.to_string())?
 }
 
 #[derive(serde::Serialize, Clone)]
@@ -936,6 +1248,22 @@ struct UpdateInfo {
     available: bool,
     version: Option<String>,
     body: Option<String>,
+}
+
+#[derive(Default)]
+struct UpdateState {
+    operation: tokio::sync::Mutex<()>,
+}
+
+#[tauri::command]
+async fn open_update_review(app: tauri::AppHandle, webview: tauri::Webview) -> Result<(), String> {
+    ensure_toolbar_access(&webview)?;
+    open_local_window(
+        &app,
+        "update-review",
+        "update-review.html",
+        "Anivox — обновление",
+    )
 }
 
 #[tauri::command]
@@ -962,48 +1290,95 @@ enum UpdateInstallOutcome {
     #[cfg(target_os = "linux")]
     ReleasePage,
     NoUpdate,
+    UpdateChanged {
+        version: String,
+        body: Option<String>,
+    },
+}
+
+fn changed_update_review(
+    expected: &str,
+    version: &str,
+    body: Option<String>,
+) -> Option<UpdateInstallOutcome> {
+    (expected != version).then(|| UpdateInstallOutcome::UpdateChanged {
+        version: version.to_owned(),
+        body,
+    })
 }
 
 #[tauri::command]
-async fn install_update(app: tauri::AppHandle) -> Result<UpdateInstallOutcome, String> {
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_none() {
-        app.opener()
-            .open_url(
-                "https://github.com/AXELL2022/Anivox-Wraper/releases/latest",
-                None::<&str>,
-            )
-            .map_err(|e| e.to_string())?;
-        return Ok(UpdateInstallOutcome::ReleasePage);
-    }
+async fn install_update(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+    expected_version: String,
+) -> Result<UpdateInstallOutcome, String> {
+    ensure_local_window(&webview, "update-review")?;
+    let state = app.state::<UpdateState>();
+    let _operation = state
+        .operation
+        .try_lock()
+        .map_err(|_| "Обновление уже устанавливается")?;
+    let result = install_reviewed_update(&app, &expected_version).await;
+    let _ = app.emit("update-idle", ());
+    result
+}
 
+async fn install_reviewed_update(
+    app: &tauri::AppHandle,
+    expected_version: &str,
+) -> Result<UpdateInstallOutcome, String> {
     let updater = app.updater().map_err(|e| e.to_string())?;
     let update = updater.check().await.map_err(|e| e.to_string())?;
     if let Some(update) = update {
+        if let Some(changed) =
+            changed_update_review(expected_version, &update.version, update.body.clone())
+        {
+            return Ok(changed);
+        }
+        #[cfg(target_os = "linux")]
+        if std::env::var_os("APPIMAGE").is_none() {
+            app.opener()
+                .open_url(
+                    "https://github.com/AXELL2022/Anivox-Wraper/releases/latest",
+                    None::<&str>,
+                )
+                .map_err(|err| err.to_string())?;
+            return Ok(UpdateInstallOutcome::ReleasePage);
+        }
+        let _ = app.emit("update-started", ());
         let mut downloaded: usize = 0;
         let app_progress = app.clone();
         let app_finished = app.clone();
-        update.download_and_install(
-            move |chunk_length, content_length| {
-                downloaded += chunk_length;
-                let percent = content_length.map(|total| {
-                    if total > 0 {
-                        ((downloaded as f64 / total as f64) * 100.0).min(100.0) as u32
-                    } else {
-                        0
-                    }
-                }).unwrap_or(0);
+        update
+            .download_and_install(
+                move |chunk_length, content_length| {
+                    downloaded += chunk_length;
+                    let percent = content_length
+                        .map(|total| {
+                            if total > 0 {
+                                ((downloaded as f64 / total as f64) * 100.0).min(100.0) as u32
+                            } else {
+                                0
+                            }
+                        })
+                        .unwrap_or(0);
 
-                let _ = app_progress.emit("update-progress", serde_json::json!({
-                    "downloaded": downloaded,
-                    "total": content_length,
-                    "percent": percent
-                }));
-            },
-            move || {
-                let _ = app_finished.emit("update-finished", ());
-            }
-        ).await.map_err(|e| e.to_string())?;
+                    let _ = app_progress.emit(
+                        "update-progress",
+                        serde_json::json!({
+                            "downloaded": downloaded,
+                            "total": content_length,
+                            "percent": percent
+                        }),
+                    );
+                },
+                move || {
+                    let _ = app_finished.emit("update-finished", ());
+                },
+            )
+            .await
+            .map_err(|e| e.to_string())?;
 
         app.restart();
     }
@@ -1013,13 +1388,25 @@ async fn install_update(app: tauri::AppHandle) -> Result<UpdateInstallOutcome, S
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        // Register before other plugins and setup so duplicate launches do not
+        // create webviews or run startup side effects (including VPN cleanup).
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_window("main").or_else(|| app.get_window("content")) {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .manage(BrowserState {
             url: Mutex::new("https://anivox.fun/".parse().unwrap()),
             fullscreen: std::sync::atomic::AtomicBool::new(false),
         })
         .manage(DiscordState(Mutex::new(None)))
         .manage(ShikimoriState::default())
+        .manage(PlayerSettingsState::default())
+        .manage(UpdateState::default())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
             // All traffic goes completely through system network settings (system DNS, routes, etc.)
@@ -1099,6 +1486,8 @@ pub fn run() {
                     .inner_size(1280.0, 720.0)
                     .min_inner_size(420.0, 300.0)
                     .build()?;
+                #[cfg(target_os = "windows")]
+                set_windows_taskbar_icon(&window)?;
                 window.add_child(
                     tauri::webview::WebviewBuilder::new("toolbar", tauri::WebviewUrl::App("index.html".into()))
                         .additional_browser_args(browser_args),
@@ -1212,7 +1601,9 @@ pub fn run() {
 
             Ok(())
         })
-        .on_window_event(|window, event| match event {
+        .on_window_event(|window, event| {
+            if !is_primary_window(window.label()) { return; }
+            match event {
             tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
                 let window = window.clone();
                 tauri::async_runtime::spawn_blocking(move || {
@@ -1230,6 +1621,7 @@ pub fn run() {
                 window.app_handle().exit(0);
             }
             _ => {}
+            }
         })
         .invoke_handler(tauri::generate_handler![
             set_discord_rpc,
@@ -1239,7 +1631,13 @@ pub fn run() {
             report_player_status,
             content_fullscreen,
             open_in_mpv,
+            open_settings,
+            get_player_settings,
+            save_player_settings_command,
+            pick_mpv_executable,
+            close_local_window,
             check_update,
+            open_update_review,
             install_update,
             get_app_version,
             shikimori_action,
@@ -1247,4 +1645,4 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
-}
+}

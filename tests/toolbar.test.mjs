@@ -47,6 +47,19 @@ test('VPN can connect and retry navigation without any loaded remote document', 
   assert.deepEqual(actions, ['reload']);
 });
 
+test('Settings opens a local window and recovers after failure', async () => {
+  let attempts = 0;
+  const { element } = await toolbar(async command => {
+    if (command === 'open_settings' && ++attempts === 1) throw new Error('Window failed');
+    return false;
+  });
+  await element('#settings').handlers.click();
+  assert.equal(element('#settings').disabled, false);
+  assert.match(element('#status').textContent, /Window failed/);
+  await element('#settings').handlers.click();
+  assert.equal(attempts, 2);
+});
+
 test('VPN failure restores the actual state and leaves the control retryable', async () => {
   let attempts = 0;
   const { element } = await toolbar(async command => {
@@ -76,82 +89,46 @@ test('MPV recovers when the site cannot respond and receives player feedback', a
   } });
   assert.equal(element('#mpv').textContent, '✔ Запущен!');
   assert.equal(element('#mpv').disabled, false);
+  listeners.get('player-status')({ payload: {
+    text: '⚠ Ошибка!', color: '#ff5252', resetAfterMs: 3000,
+    detail: 'Не удалось запустить MPV: executable missing. Выберите плеер в настройках.',
+  } });
+  assert.match(element('#status').textContent, /executable missing/);
 });
 
-test('Updater shows badge on available update and displays progress on click', async () => {
-  let installCalled = false;
+test('Updater opens a review window without installing and retries opening errors', async () => {
+  let opens = 0;
+  let installs = 0;
   const { element, listeners } = await toolbar(async command => {
-    if (command === 'get_vpn_status') return false;
-    if (command === 'check_update') return { available: false };
-    if (command === 'install_update') { installCalled = true; return new Promise(() => {}); }
+    if (command === 'install_update') installs++;
+    if (command === 'open_update_review' && ++opens === 1) throw new Error('Window failed');
+    return false;
   });
+  listeners.get('update-available')({ payload: { version: 'v0.2.5', body: 'Changes' } });
+  assert.equal(element('#updater').textContent, '✨ v0.2.5');
+  await element('#updater').handlers.click();
+  assert.match(element('#status').textContent, /Window failed/);
+  assert.equal(element('#updater').disabled, false);
+  await element('#updater').handlers.click();
+  assert.equal(opens, 2);
+  assert.equal(installs, 0);
+});
 
-  assert.equal(element('#updater').style.display, undefined);
-  listeners.get('update-available')({ payload: { version: '0.2.2', body: 'New features' } });
-  assert.equal(element('#updater').style.display, 'inline-flex');
-  assert.equal(element('#updater').textContent, '✨ v0.2.2');
-
-  listeners.get('update-available')({ payload: { version: 'v0.2.3', body: 'Bug fixes' } });
-  assert.equal(element('#updater').textContent, '✨ v0.2.3');
-
-  element('#updater').handlers.click();
-  assert.equal(installCalled, true);
-  assert.equal(element('#updater').disabled, true);
-
+test('Toolbar tracks confirmed download progress and restores latest badge on failure', async () => {
+  const { element, listeners } = await toolbar(async () => false);
+  listeners.get('update-available')({ payload: { version: '0.2.5' } });
+  listeners.get('update-started')();
   listeners.get('update-progress')({ payload: { percent: 42 } });
+  listeners.get('update-available')({ payload: { version: '0.2.6' } });
   assert.equal(element('#updater').textContent, 'Загрузка… 42%');
-
   listeners.get('update-finished')();
   assert.equal(element('#updater').textContent, 'Перезапуск…');
-});
-
-for (const result of ['release_page', 'no_update', 'error']) {
-  test(`Updater restores its button when installation returns ${result}`, async () => {
-    let attempts = 0;
-    const { element, listeners } = await toolbar(async command => {
-      if (command === 'get_vpn_status') return false;
-      if (command === 'install_update') {
-        attempts++;
-        if (result === 'error') throw new Error('Download failed');
-        return result;
-      }
-    });
-    listeners.get('update-available')({ payload: { version: '0.2.3', body: 'Fixes' } });
-    await element('#updater').handlers.click();
-    assert.equal(element('#updater').disabled, false);
-    assert.equal(element('#updater').textContent, '✨ v0.2.3');
-    assert.doesNotMatch(element('#status').textContent, /Загрузка обновления…/);
-    await element('#updater').handlers.click();
-    assert.equal(attempts, 2);
-  });
-}
-
-test('Updater keeps progress during a repeated availability event and restores the latest badge', async () => {
-  let finish;
-  let attempts = 0;
-  const { element, listeners } = await toolbar(async command => {
-    if (command === 'get_vpn_status') return false;
-    if (command === 'install_update') {
-      attempts++;
-      return await new Promise(resolve => { finish = resolve; });
-    }
-  });
-  listeners.get('update-available')({ payload: { version: '0.2.3' } });
-  const click = element('#updater').handlers.click();
-  await element('#updater').handlers.click();
-  assert.equal(attempts, 1);
-  listeners.get('update-progress')({ payload: { percent: 42 } });
-  listeners.get('update-available')({ payload: { version: '0.2.4' } });
-  assert.equal(element('#updater').textContent, 'Загрузка… 42%');
-  finish('no_update');
-  await click;
+  listeners.get('update-idle')();
+  assert.equal(element('#updater').textContent, '✨ v0.2.6');
   assert.equal(element('#updater').disabled, false);
-  assert.equal(element('#updater').textContent, '✨ v0.2.4');
   listeners.get('update-progress')({ payload: { percent: 99 } });
-  listeners.get('update-finished')();
-  assert.equal(element('#updater').textContent, '✨ v0.2.4');
+  assert.equal(element('#updater').textContent, '✨ v0.2.6');
 });
-
 test('Brand element displays application version from get_app_version', async () => {
   const { element } = await toolbar(async command => {
     if (command === 'get_vpn_status') return false;

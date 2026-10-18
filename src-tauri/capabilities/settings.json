@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings",
+  "description": "Local MPV settings only",
+  "webviews": ["settings"],
+  "permissions": ["allow-player-settings", "allow-close-local-window"]
+}

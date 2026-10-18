@@ -1,0 +1,2 @@
+# lib.rs is stored with CRLF in existing history; preserve it when staging.
+src-tauri/src/lib.rs -text

@@ -15,7 +15,7 @@ Anivox is a Tauri v2 desktop wrapper for `https://anivox.fun/`, with a Rust back
 - `src-tauri/tauri.conf.json`: application identity, bundle settings, global Tauri bridge, and local asset directory (`../ui`). The main window and child webviews are created in Rust using Tauri's `unstable` multiwebview feature.
 - `src-tauri/permissions/*.toml`: custom IPC permission definitions.
 - `src-tauri/capabilities/default.json`: remote media/Discord permissions scoped to the `content` webview and `https://anivox.fun/*`. `toolbar.json` grants local browser/VPN controls only to `toolbar`.
-- `src/`: local vanilla template/assets, not the remote site's UI. Its template `greet` invocation has no corresponding registered backend command.
+- `ui/settings.html` and `ui/update-review.html`: local auxiliary windows for MPV settings and release notes. Their close/destroy events must not trigger primary-window hide/exit/VPN cleanup.
 - `ANIVOX-UA-48.conf`: WireGuard configuration embedded at compile time via `include_str!`.
 - `.cargo/config.toml`: selects `rust-lld.exe` for Windows MSVC linking.
 - `run.bat`: adds Bun's user installation to PATH and starts development.
@@ -53,9 +53,10 @@ node --test tests/toolbar.test.mjs
 - Keep Shikimori's HTTPS navigation and engine-managed login popups enabled for social sign-in. External login providers receive no application IPC permissions; do not broaden the origin-scoped capability to enable OAuth.
 - VPN currently uses system WireGuard: `wireguard.exe` tunnel services on Windows, `nmcli` with a `wg-quick` fallback on Linux. Startup and window destruction attempt to disconnect an active named tunnel. There is no active `proxy.rs` or embedded wireproxy engine in the current source tree.
 - On Windows, explicit VPN toggles retry access-denied WireGuard operations through PowerShell `Start-Process -Verb RunAs` (UAC). Only WireGuard is elevated. Automatic startup/exit cleanup is best-effort and does not request elevation; a non-elevated app may leave the tunnel active. UAC cancellation is reported in the toolbar.
-- MPV launch prefers `F:\Mpv\mpv.exe` when present, otherwise `mpv` on PATH; playback arguments include stream metadata, headers, and start time. Account for these environment-specific paths when modifying or checking playback.
+- MPV launch uses the executable selected in local settings, otherwise `mpv` on PATH. Settings are saved atomically under Tauri app_config_dir; per-launch logs go to app_local_data_dir/logs. Preserve metadata, headers, start time and subtitles. Only the local settings webview may choose or save an executable path. Discord still tracks only the embedded player.
 - WebView2 browser flags and injected video styling support the project's NVIDIA video-processing integration; preserve their intent during UI or player changes.
-- `.gitignore` includes `/src/` and `backup_linux/`; check tracking status when adding or changing assets in these locations.
+- The root `src/` template and unused `src-tauri/binaries/wireproxy.exe` have been removed. `backup_linux/` remains ignored historical material.
+- Update installation belongs only to local `update-review` and requires the reviewed version. Remote content and the toolbar may open that window but cannot install directly. Release notes from CHANGELOG must feed both GitHub Release and latest.json.
 
 ## Verification
 
@@ -64,3 +65,4 @@ node --test tests/toolbar.test.mjs
 - Run `node --test tests/*.test.mjs` for all UI tests. Verify Shikimori opens above Anivox, unloads via the button/Escape/backdrop, starts at its homepage on reopening, and follows window resizing without reloading Anivox.
 - Discord, WireGuard, MPV, and the remote site are external runtime dependencies; report which integrations were actually exercised.
 - Documentation-only edits do not require launching or building the application.
+- For Windows taskbar icon changes, build a release executable and run `powershell -NoProfile -File tests/windows_taskbar_icon.ps1 -Exe src-tauri/target/release/anivox.exe`. This launches a test instance and checks that both `ICON_SMALL` and `ICON_BIG` contain valid window icons; the script stops only its own instance.

@@ -14,8 +14,9 @@
     "allow-mpv-commands",
     "allow-vpn-commands",
     "allow-browser-controls",
+    "allow-settings-window",
     "allow-shikimori-controls",
     "allow-check-update",
-    "allow-install-update"
+    "allow-update-review"
   ]
 }

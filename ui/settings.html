@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Anivox — настройки</title><link rel="stylesheet" href="local-window.css"><script src="settings.js" defer></script></head>
+<body>
+  <h1>Настройки MPV</h1>
+  <form id="settings-form">
+    <label for="mpv-path">Путь к исполняемому файлу MPV</label>
+    <div class="row"><input id="mpv-path" placeholder="mpv из PATH" autocomplete="off" spellcheck="false"><button id="browse" type="button">Обзор…</button></div>
+    <p class="hint">Оставьте поле пустым для поиска MPV в PATH. Выбранный путь используется при следующем запуске видео.</p>
+    <div class="actions"><button id="save" class="primary" type="submit">Сохранить</button><button id="reset" type="button">Сбросить путь</button><button id="close" type="button">Закрыть</button></div>
+  </form>
+  <p class="hint">Журналы MPV сохраняются в папку данных Anivox:</p><p id="logs">Загрузка…</p>
+  <p id="status" role="status" aria-live="polite"></p>
+</body></html>

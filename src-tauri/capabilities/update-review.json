@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "update-review",
+  "description": "Local release notes and explicit update installation",
+  "webviews": ["update-review"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten", "allow-check-update", "allow-install-update", "allow-close-local-window"]
+}

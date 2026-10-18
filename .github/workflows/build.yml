@@ -22,7 +22,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
+          - os: [self-hosted, Windows, X64]
             platform: windows
           - os: ubuntu-22.04
             platform: linux
@@ -38,8 +38,15 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
 
       - name: Rust Cache
         uses: swatinem/rust-cache@v2
@@ -70,11 +77,28 @@ jobs:
       - name: Run unit tests
         run: node --test tests/*.test.mjs
 
+      - name: Run Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+
+      - name: Check Rust compilation
+        run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+
       - name: Build Tauri application
         run: bun run build
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+      - name: Verify Windows window and taskbar icons
+        if: matrix.platform == 'windows'
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/windows_taskbar_icon.ps1 -Exe src-tauri/target/release/anivox.exe
+
+      - name: Verify Windows single instance and window restoration
+        if: matrix.platform == 'windows'
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/windows_single_instance.ps1 -Exe src-tauri/target/release/anivox.exe
 
       - name: Build Arch Linux package (.pkg.tar.zst)
         if: matrix.platform == 'linux'
@@ -140,32 +164,18 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
+
+      - name: Extract release notes from changelog
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node scripts/generate-updater-manifest.mjs --extract-notes
 
       - name: Generate updater manifest (latest.json)
         run: node scripts/generate-updater-manifest.mjs
         env:
           RELEASE_TAG: ${{ github.ref_name }}
           REPO_NAME: ${{ github.repository }}
-
-      - name: Extract release notes from changelog
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
-        run: |
-          python3 - <<'PY'
-          import os
-          import re
-          from pathlib import Path
-
-          version = os.environ["RELEASE_TAG"].removeprefix("v")
-          changelog = Path("CHANGELOG.md").read_text(encoding="utf-8")
-          pattern = rf"^## \[{re.escape(version)}\][^\n]*\n.*?(?=^## |\Z)"
-          section = re.search(pattern, changelog, re.MULTILINE | re.DOTALL)
-          if section is None:
-              raise SystemExit(f"Missing changelog entry for {version}")
-          notes = re.sub(r"\n---\s*\Z", "", section.group(0)).strip()
-          Path("release-notes.md").write_text(notes + "\n", encoding="utf-8")
-          PY
 
       - name: Publish GitHub Release assets
         uses: softprops/action-gh-release@v2

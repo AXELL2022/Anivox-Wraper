@@ -1,0 +1,14 @@
+[[permission]]
+identifier = "allow-settings-window"
+description = "Open the local settings window from the toolbar"
+commands.allow = ["open_settings"]
+
+[[permission]]
+identifier = "allow-player-settings"
+description = "Read, pick and save MPV settings in the local settings window"
+commands.allow = ["get_player_settings", "pick_mpv_executable", "save_player_settings_command"]
+
+[[permission]]
+identifier = "allow-close-local-window"
+description = "Close the calling local settings or update window"
+commands.allow = ["close_local_window"]

@@ -1,4 +1,9 @@
-default = { description = "Permissions for checking and installing updates", permissions = ["allow-check-update", "allow-install-update"] }
+default = { description = "Permissions for checking and reviewing updates", permissions = ["allow-check-update", "allow-update-review"] }
+
+[[permission]]
+identifier = "allow-update-review"
+description = "Open the local release notes window"
+commands.allow = ["open_update_review"]
 
 [[permission]]
 identifier = "allow-check-update"

@@ -8,6 +8,14 @@ const shikimori = toolbarRoot.querySelector('#shikimori');
 const updater = toolbarRoot.querySelector('#updater');
 const status = toolbarRoot.querySelector('#status');
 const brand = toolbarRoot.querySelector('.brand');
+const settings = toolbarRoot.querySelector('#settings');
+settings?.addEventListener('click', async () => {
+  if (settings.disabled) return;
+  settings.disabled = true;
+  try { await invoke('open_settings'); }
+  catch (err) { message(`Не удалось открыть настройки: ${err}`, true); }
+  finally { settings.disabled = false; }
+});
 let vpnActive = false;
 let vpnPending = false;
 let updatePending = false;
@@ -120,32 +128,39 @@ function showUpdateBadge(version, body) {
 }
 
 if (updater) {
+  let reviewOpening = false;
   updater.addEventListener('click', async () => {
-    if (updatePending) return;
-    updatePending = true;
+    if (updatePending || reviewOpening) return;
+    reviewOpening = true;
     updater.disabled = true;
-    updater.textContent = 'Загрузка… 0%';
-    message('Загрузка обновления…');
     try {
-      const result = await invoke('install_update');
-      message(result === 'release_page'
-        ? 'Открыта страница релиза. Установите обновление вручную.'
-        : 'Обновление больше не доступно. Повторите проверку позже.');
+      await invoke('open_update_review');
     } catch (err) {
       message(`Ошибка обновления: ${err}`, true);
     } finally {
-      updatePending = false;
-      updater.disabled = false;
+      reviewOpening = false;
+      updater.disabled = updatePending;
       if (availableUpdate) showUpdateBadge(availableUpdate.version, availableUpdate.body);
     }
   });
 }
 
 async function init() {
+  await listen('update-started', () => {
+    updatePending = true;
+    if (updater) { updater.disabled = true; updater.textContent = 'Загрузка… 0%'; }
+    message('Загрузка обновления…');
+  });
+  await listen('update-idle', () => {
+    updatePending = false;
+    if (updater) updater.disabled = false;
+    if (availableUpdate) showUpdateBadge(availableUpdate.version, availableUpdate.body);
+  });
   await listen('shikimori-status', ({ payload }) => renderShikimori(payload.visible));
   invoke('shikimori_action', { action: 'status' }).then(renderShikimori).catch(() => {});
 
   await listen('player-status', ({ payload }) => {
+    if (payload.detail) message(payload.detail, true);
     clearTimeout(mpvTimer);
     mpv.textContent = payload.text;
     mpv.style.color = payload.color;
