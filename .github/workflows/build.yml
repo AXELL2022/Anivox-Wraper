@@ -29,10 +29,15 @@ jobs:
         include:
           - os: [self-hosted, Windows, X64]
             platform: windows
+            shell: powershell
           - os: ubuntu-22.04
             platform: linux
+            shell: bash
 
     runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
 
     steps:
       - name: Checkout repository
@@ -42,7 +47,7 @@ jobs:
 
       - name: Prepare Windows runner tools
         if: matrix.platform == 'windows'
-        shell: pwsh
+        shell: powershell
         run: |
           $gitRoot = Split-Path (Split-Path (Get-Command git).Source -Parent) -Parent
           $gitBin = Join-Path $gitRoot 'bin'
