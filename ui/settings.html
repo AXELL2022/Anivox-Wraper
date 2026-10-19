@@ -7,6 +7,9 @@
     <label for="mpv-path">Путь к исполняемому файлу MPV</label>
     <div class="row"><input id="mpv-path" placeholder="mpv из PATH" autocomplete="off" spellcheck="false"><button id="browse" type="button">Обзор…</button></div>
     <p class="hint">Оставьте поле пустым для поиска MPV в PATH. Выбранный путь используется при следующем запуске видео.</p>
+    <label class="mirror-option"><input id="mirror-embedded" type="checkbox"> Продолжать воспроизведение на сайте при просмотре в MPV</label>
+    <p class="hint">После запуска MPV встроенный плеер работает без звука на минимальном качестве и следует его паузе и позиции. Расход трафика и нагрузка увеличатся; начисление опыта и часов зависит от сайта.</p>
+    <button id="clear-history" type="button">Очистить сохранённые позиции</button>
     <div class="actions"><button id="save" class="primary" type="submit">Сохранить</button><button id="reset" type="button">Сбросить путь</button><button id="close" type="button">Закрыть</button></div>
   </form>
   <p class="hint">Журналы MPV сохраняются в папку данных Anivox:</p><p id="logs">Загрузка…</p>

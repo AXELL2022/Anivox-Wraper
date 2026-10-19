@@ -11,11 +11,12 @@ function deferred() {
   return { promise, resolve };
 }
 
-function player({ video = null, context = null, launchMpv = async () => {} } = {}) {
+function player({ video = null, context = null, launchMpv = async () => {}, withSession = false, getMpvState = async () => null, storage = new Map() } = {}) {
   let page = new URL('https://anivox.fun/anime/show/');
   const responses = new Map();
   const calls = [];
   const events = new Map();
+  const intervals = [];
   class Xhr {
     handlers = new Map();
     open(method, url) { this.url = String(url); }
@@ -39,7 +40,7 @@ function player({ video = null, context = null, launchMpv = async () => {} } = {
   };
   const window = {
     history,
-    __TAURI__: { core: { invoke: async (command, args) => { calls.push({ command, args }); if (command === 'open_in_mpv') return await launchMpv(args); } } },
+    __TAURI__: { core: { invoke: async (command, args) => { calls.push({ command, args }); if (command === 'open_in_mpv') return await launchMpv(args); if (command === 'get_mpv_state') return await getMpvState(); } } },
     async fetch(input) {
       const url = new URL(typeof input === 'string' ? input : input.url || input.href, page).href;
       return await responses.get(url) || { ok: true, clone: () => ({ json: async () => null }) };
@@ -55,7 +56,8 @@ function player({ video = null, context = null, launchMpv = async () => {} } = {
     get pathname() { return page.pathname; }, get search() { return page.search; },
     get hash() { return page.hash; },
   };
-  runInNewContext(source, {
+  const script = withSession ? readFileSync(new URL('../src-tauri/scripts/mpv-session.js', import.meta.url), 'utf8') + '\n' + source : source;
+  runInNewContext(script, {
     window, location, history, URL, XMLHttpRequest: Xhr,
     document: {
       title: 'Episode - Anivox', readyState: 'loading',
@@ -67,14 +69,14 @@ function player({ video = null, context = null, launchMpv = async () => {} } = {
       },
       addEventListener() {},
     },
-    localStorage: { getItem: () => null },
+    localStorage: { getItem: key => storage.get(key) ?? null, setItem: (key,value) => storage.set(key,value), removeItem: key => storage.delete(key) },
     console: { log() {}, warn() {}, error() {} },
     MutationObserver: class { observe() {} },
-    setTimeout() {}, clearTimeout() {}, setInterval() {},
+    setTimeout() {}, clearTimeout() {}, setInterval(fn) { intervals.push(fn); },
   });
   function response(data, ok = true) { return { ok, clone: () => ({ json: async () => data }) }; }
   return {
-    calls, window,
+    calls, window, async tick() { for (const fn of intervals) await fn(); },
     async launch() {
       const start = calls.length;
       await window.__anivoxLaunchMpv();
@@ -318,4 +320,21 @@ test('Failed MPV launch leaves embedded playback running', async () => {
   assert.equal(pauses, 0);
   const errorStatus = app.calls.filter(call => call.command === 'report_player_status').at(-1)?.args;
   assert.match(errorStatus.detail, /not installed/);
+});
+
+
+test('Full handoff freezes high quality and identity before muting and lowering the site player', async () => {
+  const storage = new Map([['quality__3_1','1080']]);
+  const video = {currentTime:42,paused:false,muted:false,volume:.8,playbackRate:1,pause(){this.paused=true},async play(){this.paused=false}};
+  const changes=[];
+  const context={anime_id:1,episode:2,translations_id:3,quality:'1080',qualityPreset:'1080',GetQualities:[{id:'1080'},{id:'360'}],async changeQuality(choice){changes.push(choice.id);this.quality=choice.id;this.qualityPreset=choice.id;storage.set('quality__3_1',choice.id)}};
+  let sample={sessionId:'full',mediaKey:'1:2:3',ready:true,mirrorEmbedded:true,position:42,duration:1200,speed:1,paused:false};
+  const app=player({video,context,storage,withSession:true,launchMpv:async()=>({sessionId:'full',mirrorEmbedded:true}),getMpvState:async()=>sample});
+  await app.fetch('/api/episodes/2',{links:{1080:'/best.m3u8',360:'/minimum.m3u8'}});
+  const args=await app.launch();
+  assert.equal(args.url,'https://anivox.fun/best.m3u8');assert.equal(args.media.key,'1:2:3');
+  assert.deepEqual(changes,['360']);assert.equal(video.muted,true);assert.equal(video.paused,false);
+  assert.equal(storage.get('quality__3_1'),'1080');assert.equal(context.qualityPreset,'1080');
+  sample={...sample,position:120,paused:true};await app.tick();assert.equal(video.currentTime,120);assert.equal(video.paused,true);
+  sample=null;await app.tick();assert.equal(context.quality,'1080');assert.equal(video.muted,false);
 });

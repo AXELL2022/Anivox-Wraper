@@ -6,7 +6,7 @@ commands.allow = ["open_settings"]
 [[permission]]
 identifier = "allow-player-settings"
 description = "Read, pick and save MPV settings in the local settings window"
-commands.allow = ["get_player_settings", "pick_mpv_executable", "save_player_settings_command"]
+commands.allow = ["get_player_settings", "pick_mpv_executable", "save_player_settings_command", "clear_playback_history"]
 
 [[permission]]
 identifier = "allow-close-local-window"

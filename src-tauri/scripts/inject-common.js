@@ -1,6 +1,9 @@
 // Common injection: MPV interception, fullscreen controls, UI styles & Discord RPC
 (function() {
     // Multi-layer video stream & subtitle interceptor for MPV
+    let mpvSession = null;
+    let mpvBinding = null;
+    let cancelResume = null;
     let apiLinks = null;
     let currentHlsUrl = null;
     let lastStreamUrl = null;
@@ -44,6 +47,9 @@
     }
 
     function resetMediaCache() {
+        cancelResume?.();
+        mpvBinding = null;
+        mpvSession?.stop().catch(console.error);
         const hadCachedMedia = !!(apiLinks || currentHlsUrl || lastStreamUrl || lastSubUrl);
         if (hadCachedMedia || !staleMediaUrls.size) staleBase = mediaBase;
         const old = [currentHlsUrl, lastStreamUrl, lastSubUrl];
@@ -295,6 +301,95 @@
         return candidate(iframe?.src, 0, 'iframe');
     }
 
+    function playbackMedia() {
+        const ctx = playerContext(document.querySelector('.player-container'));
+        const anime = playerContext(document.querySelector('.anime'));
+        const route = /^\/anime\/(\d+)(?:-|\/|$)/.exec(location.pathname)?.[1];
+        const animeId = Number(ctx?.anime_id || anime?.anime?.id || route);
+        const episode = Number(ctx?.episode || anime?.episode);
+        const translation = Number(ctx?.translations_id || anime?.translations_id);
+        const key = [animeId, episode, translation].every(n => Number.isSafeInteger(n) && n > 0)
+            ? `${animeId}:${episode}:${translation}` : '';
+        const presence = discordPresence();
+        presence.stateText = presence.stateText.split(' · ').filter(part => /^Серия |^Сезон /.test(part)).join(' · ');
+        presence.endTimestamp = null;
+        return {key, presence};
+    }
+
+    function chooseResume(point) {
+        return new Promise(resolve => {
+            const overlay = document.createElement('div');
+            overlay.setAttribute('role', 'dialog');
+            overlay.setAttribute('aria-modal', 'true');
+            overlay.setAttribute('aria-label', 'Продолжить просмотр');
+            overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;background:#000b;display:flex;align-items:center;justify-content:center';
+            const box = document.createElement('div');
+            box.style.cssText = 'background:#20212a;color:white;padding:24px;border-radius:12px;font:16px sans-serif;max-width:380px';
+            const label = document.createElement('p');
+            const seconds = Math.floor(point.position);
+            label.textContent = `Продолжить просмотр с ${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}?`;
+            box.append(label);
+            const finish = value => { overlay.remove(); document.removeEventListener('keydown', escape, true); cancelResume = null; resolve(value); };
+            const escape = event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); finish(null); } };
+            for (const [title, value] of [['Продолжить', point.position], ['С начала', 0], ['Отмена', null]]) {
+                const button = document.createElement('button');
+                button.textContent = title;
+                button.style.cssText = 'margin:4px;padding:10px;cursor:pointer';
+                button.addEventListener('click', () => finish(value));
+                box.append(button);
+            }
+            overlay.append(box); document.body.append(overlay);
+            document.addEventListener('keydown', escape, true);
+            cancelResume = () => finish(null);
+            box.querySelector('button').focus();
+        });
+    }
+
+    mpvSession = window.__anivoxCreateMpvSession?.({
+        getVideo: () => document.querySelector('video.video-element') || document.querySelector('video'),
+        getContext: () => playerContext(document.querySelector('.player-container')),
+        getIdentity: () => playbackMedia().key,
+        getGeneration: () => mediaGeneration,
+        changeQuality: async (context, choice) => {
+            const keys = [`quality__${context.translations_id}_${context.anime_id}`, `quality_${context.translations_id}_${context.anime_id}`];
+            const saved = keys.map(key => localStorage.getItem(key));
+            const preset = context.qualityPreset;
+            const generation = mediaGeneration;
+            const identity = playbackMedia().key;
+            try { await context.changeQuality(choice); }
+            finally {
+                if (generation === mediaGeneration && identity === playbackMedia().key) {
+                    keys.forEach((key, index) => {
+                        if (saved[index] == null) localStorage.removeItem(key);
+                        else localStorage.setItem(key, saved[index]);
+                    });
+                    context.qualityPreset = preset;
+                }
+            }
+        },
+    });
+    let mpvSyncPending = false;
+    async function syncMpv() {
+        if (!mpvBinding || mpvSyncPending || !mpvSession) return;
+        mpvSyncPending = true;
+        const binding = mpvBinding;
+        try {
+            const sample = await window.__TAURI__.core.invoke('get_mpv_state');
+            if (mpvBinding !== binding) return;
+            await mpvSession.update(sample);
+            if (!sample || sample.sessionId !== binding.sessionId) mpvBinding = null;
+        } catch (_) {
+            if (mpvBinding === binding) { mpvBinding = null; await mpvSession.stop(); }
+        } finally { mpvSyncPending = false; }
+    }
+    setInterval(syncMpv, 1000);
+    document.addEventListener('ended', event => {
+        if (mpvBinding?.mirrorEmbedded && event.target === (document.querySelector('video.video-element') || document.querySelector('video'))) {
+            event.stopImmediatePropagation();
+        }
+    }, true);
+    window.addEventListener('pagehide', () => { mpvBinding = null; mpvSession?.stop().catch(console.error); });
+
     async function launchInMpv() {
         setBtnStatus('⌛ Поиск...', '#ffeb3b', 0);
         const video = document.querySelector('video.video-element') || document.querySelector('video');
@@ -306,7 +401,9 @@
             return;
         }
 
-        const startTime = (video && video.currentTime) ? video.currentTime : (info.time || 0);
+        let startTime = (video && video.currentTime) ? video.currentTime : (info.time || 0);
+        const generation = mediaGeneration;
+        const media = playbackMedia();
 
         const qLabel = info.quality && info.quality !== 'auto' ? ` (${info.quality})` : ' (MAX)';
         setBtnStatus(`▶ Запуск MPV${qLabel}...`, '#69f0ae', 0);
@@ -317,14 +414,28 @@
 
         try {
             if (window.__TAURI__ && window.__TAURI__.core) {
-                await window.__TAURI__.core.invoke('open_in_mpv', {
+                if (media.key) {
+                    const saved = await window.__TAURI__.core.invoke('get_playback_resume', {key: media.key});
+                    if (saved && Math.abs(saved.position - startTime) > 8) {
+                        const chosen = await chooseResume(saved);
+                        if (chosen == null) return;
+                        startTime = chosen;
+                    }
+                }
+                if (generation !== mediaGeneration) return;
+                const launched = await window.__TAURI__.core.invoke('open_in_mpv', {
                     url: info.url,
                     title: title || null,
                     startTime: startTime > 0 ? startTime : null,
                     subUrl: lastSubUrl || null,
-                    token: token
+                    token: token,
+                    media,
                 });
-                if (video && !video.paused) video.pause();
+                if (mpvSession && launched?.sessionId && generation === mediaGeneration) {
+                    await mpvSession.begin(launched, media.key);
+                    mpvBinding = launched;
+                    await syncMpv();
+                } else if (!mpvSession && video && !video.paused) video.pause();
                 setBtnStatus(`✔ Запущен${qLabel}!`, '#69f0ae', 2500);
             } else {
                 throw new Error('Tauri API недоступен');

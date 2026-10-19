@@ -41,3 +41,18 @@ test('Settings errors preserve input and allow retry; Escape only closes the loc
   await app.keys.get('keydown')({ key: 'Escape' });
   assert.equal(closed, 1);
 });
+
+test('Settings exposes mirror preference and clears local playback history', async () => {
+  const calls = [];
+  const app = await localWindow('../ui/settings.js', async (command, args) => {
+    calls.push({command,args});
+    if (command === 'get_player_settings') return {mpvPath:null,mirrorEmbedded:true,logDirectory:'logs'};
+    if (command === 'save_player_settings_command') return {...args,logDirectory:'logs'};
+  });
+  assert.equal(app.element('#mirror-embedded').checked,true);
+  app.element('#mirror-embedded').checked=false;
+  await app.submit();
+  assert.equal(calls.find(c=>c.command==='save_player_settings_command').args.mirrorEmbedded,false);
+  await app.click('#clear-history');
+  assert.equal(calls.filter(c=>c.command==='clear_playback_history').length,1);
+});
