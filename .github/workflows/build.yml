@@ -81,6 +81,9 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          # Self-hosted Windows shares Cargo with local development. The cache
+          # post-step deletes pre-existing bin files, including rustup proxies.
+          cache-bin: false
 
       - name: Install Linux system dependencies
         if: matrix.platform == 'linux'
