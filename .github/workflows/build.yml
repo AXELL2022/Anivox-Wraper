@@ -57,10 +57,15 @@ jobs:
           $gitBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           (Join-Path $env:USERPROFILE '.cargo\bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
-      - name: Setup Bun
+      - name: Setup isolated Bun on Windows
+        if: matrix.platform == 'windows'
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-ci-bun.ps1
+
+      - name: Setup Bun on Linux
+        if: matrix.platform == 'linux'
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version-file: .bun-version
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
