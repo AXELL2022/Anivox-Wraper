@@ -121,13 +121,17 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
+      - name: Prepare isolated Windows native-test executable
+        if: matrix.platform == 'windows'
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-native-ci.ps1
+
       - name: Verify Windows window and taskbar icons
         if: matrix.platform == 'windows'
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/windows_taskbar_icon.ps1 -Exe src-tauri/target/release/anivox.exe
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/windows_taskbar_icon.ps1 -Exe "$env:ANIVOX_NATIVE_TEST_EXE"
 
       - name: Verify Windows single instance and window restoration
         if: matrix.platform == 'windows'
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/windows_single_instance.ps1 -Exe src-tauri/target/release/anivox.exe
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/windows_single_instance.ps1 -Exe "$env:ANIVOX_NATIVE_TEST_EXE"
 
       - name: Build Arch Linux package (.pkg.tar.zst)
         if: matrix.platform == 'linux'

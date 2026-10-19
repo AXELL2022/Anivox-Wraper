@@ -19,8 +19,8 @@ public class AnivoxSingleInstanceTest {
 '@
 
 $resolvedExe = (Resolve-Path -LiteralPath $Exe).Path
-if (Get-Process -Name anivox -ErrorAction SilentlyContinue) {
-    throw 'Close existing Anivox instances before running this test'
+if (Get-Process -Name anivox -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $resolvedExe }) {
+    throw 'Close existing instances of the executable under test before running this test'
 }
 $testProcesses = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
 try {

@@ -78,6 +78,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tests/windows_taskbar_icon.p
 powershell -NoProfile -ExecutionPolicy Bypass -File tests/windows_single_instance.ps1 -Exe src-tauri/target/release/anivox.exe
 ```
 
+В self-hosted CI для этих проверок отдельно собирается EXE с идентификатором `com.yasin.anivox.ci-native` и собственным профилем. Он не конфликтует с запущенным пользовательским Anivox. Исходный EXE восстанавливается с проверкой SHA-256; установщики и опубликованные артефакты сохраняют обычный идентификатор.
+
 Скрипты завершают только свои тестовые экземпляры. Проверки Discord, WireGuard, MPV и удалённого сайта требуют соответствующих внешних программ и доступа к сервисам.
 
 ## Обновления и выпуск
