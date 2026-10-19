@@ -1,2 +1,2 @@
-# lib.rs is stored with CRLF in existing history; preserve it when staging.
-src-tauri/src/lib.rs -text
+# Keep Rust source line endings consistent across Windows and Linux.
+src-tauri/src/lib.rs text eol=lf
