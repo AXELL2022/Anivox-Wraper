@@ -20,6 +20,31 @@ test('Mirror starts only after MPV file-loaded and selects lowest playable quali
  await a.player.update(a.snapshot());assert.equal(a.video.muted,true);assert.equal(a.video.paused,false);assert.deepEqual(a.qualities,['360']);
  await a.player.update(a.snapshot());assert.deepEqual(a.qualities,['360']);
 });
+test('Mirror waits for site qualities that arrive after MPV file-loaded',async()=>{
+ const a=setup();const choices=a.context.GetQualities;a.context.GetQualities=[];
+ await a.player.begin({sessionId:'test',mirrorEmbedded:true},'1:2:3');
+ await a.player.update(a.snapshot());assert.equal(a.video.muted,true);assert.deepEqual(a.qualities,[]);
+ a.context.GetQualities=choices;
+ await a.player.update(a.snapshot());assert.equal(a.context.quality,'360');assert.deepEqual(a.qualities,['360']);
+ await a.player.update(a.snapshot());assert.deepEqual(a.qualities,['360']);
+ await a.player.stop();assert.equal(a.context.quality,'1080');
+});
+test('Mirror retries a failed site quality switch without losing the original preference',async()=>{
+ const a=setup();const change=a.context.changeQuality;let attempts=0;
+ a.context.changeQuality=async function(choice){if(++attempts===1)throw new Error('Player not ready');return change.call(this,choice)};
+ await a.player.begin({sessionId:'test',mirrorEmbedded:true},'1:2:3');
+ await a.player.update(a.snapshot());assert.equal(a.context.quality,'1080');
+ await a.player.update(a.snapshot());assert.equal(a.context.quality,'360');
+ await a.player.stop();assert.equal(a.context.quality,'1080');
+});
+test('Mirror retries when the site updates its quality label before its stream switch fails',async()=>{
+ const a=setup();let attempts=0;
+ a.context.changeQuality=async function(choice){this.quality=choice.id;if(++attempts===1)throw new Error('HLS attach failed');this.videoSrc=`/${choice.id}.m3u8`};
+ await a.player.begin({sessionId:'test',mirrorEmbedded:true},'1:2:3');
+ await a.player.update(a.snapshot());assert.equal(a.context.videoSrc,undefined);
+ await a.player.update(a.snapshot());assert.equal(attempts,2);assert.equal(a.context.videoSrc,'/360.m3u8');
+ await a.player.stop();assert.equal(a.context.quality,'1080');
+});
 test('Mirror follows pause, buffering, seek and speed, then restores quality and sound',async()=>{
  const a=setup();await a.player.begin({sessionId:'test',mirrorEmbedded:true},'1:2:3');
  await a.player.update(a.snapshot({position:90,speed:1.5,paused:true}));assert.equal(a.video.currentTime,90);assert.equal(a.video.paused,true);assert.equal(a.video.playbackRate,1.5);

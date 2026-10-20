@@ -36,8 +36,31 @@
     }
 
     function playerContext(el) {
+        if (!el) return null;
         const comp = el && (el.__vueParentComponent || el._vnode?.component || el.__vue_app__);
-        return comp && (comp.proxy || comp.ctx || comp.setupState);
+        if (comp) return comp.proxy || comp.ctx || comp.setupState;
+        // Production Vue omits __vueParentComponent on DOM nodes. Its live
+        // VNode tree still records the component that rendered each element.
+        const root = document.querySelector('#app');
+        const pending = [{node: root?._vnode, owner: null}];
+        const seen = new Set();
+        while (pending.length) {
+            const {node, owner} = pending.pop();
+            if (!node || typeof node !== 'object' || seen.has(node)) continue;
+            seen.add(node);
+            const component = node.component || owner;
+            // Component VNodes share their child's root element. Descend to
+            // the rendered DOM VNode to avoid returning a wrapper's proxy.
+            if (!node.component && !node.suspense && node.el === el && component) {
+                return component.proxy || component.ctx || component.setupState;
+            }
+            if (node.component?.subTree) pending.push({node: node.component.subTree, owner: node.component});
+            if (node.suspense?.activeBranch) pending.push({node: node.suspense.activeBranch, owner: component});
+            if (Array.isArray(node.children)) {
+                for (const child of node.children) pending.push({node: child, owner: component});
+            }
+        }
+        return null;
     }
 
     function linksKey(links) {

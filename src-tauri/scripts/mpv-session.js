@@ -47,16 +47,25 @@
                     b.started = true;
                     b.video.addEventListener?.('volumechange', b.mute);
                     b.video.muted = true;
+                }
+                // MPV can load before the site's HLS quality tracks. Starting
+                // the mirror must not consume the only quality-switch attempt.
+                if (!b.qualityApplied) {
                     const choices = b.context?.GetQualities;
                     const qualities = (Array.isArray(choices) ? choices : []).filter(q =>
                         !q.disabled && !q.local && /^\d+p?$/.test(String(q.id)));
                     qualities.sort((a, c) => parseInt(a.id) - parseInt(c.id));
-                    if (qualities[0] && String(qualities[0].id) !== String(b.quality) && b.context?.changeQuality) {
-                        b.changed = true;
-                        try { await changeQuality(b.context, qualities[0]); }
-                        catch (_) { b.changed = false; }
-                        if (binding !== b) return;
-                        if (!same(b)) { await stop(); return; }
+                    if (qualities[0] && b.context?.changeQuality) {
+                        if (b.qualityRetry || String(qualities[0].id) !== String(b.context.quality)) {
+                            // Restore even if the site changes its source and
+                            // then rejects while attaching the new HLS stream.
+                            b.changed = true;
+                            try { await changeQuality(b.context, qualities[0]); b.qualityRetry = false; }
+                            catch (error) { b.qualityRetry = true; console.warn('[Anivox-MPV] Site quality switch failed; will retry:', error); }
+                            if (binding !== b) return;
+                            if (!same(b)) { await stop(); return; }
+                        }
+                        b.qualityApplied = !b.qualityRetry && String(b.context.quality) === String(qualities[0].id);
                     }
                 }
                 b.video.muted = true;

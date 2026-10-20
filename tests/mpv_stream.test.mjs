@@ -11,12 +11,18 @@ function deferred() {
   return { promise, resolve };
 }
 
-function player({ video = null, context = null, launchMpv = async () => {}, withSession = false, getMpvState = async () => null, storage = new Map() } = {}) {
+function player({ video = null, context = null, productionVue = false, launchMpv = async () => {}, withSession = false, getMpvState = async () => null, storage = new Map() } = {}) {
   let page = new URL('https://anivox.fun/anime/show/');
   const responses = new Map();
   const calls = [];
   const events = new Map();
   const intervals = [];
+  const playerElement = context ? (productionVue ? {} : { __vueParentComponent: { ctx: context } }) : null;
+  // Vue production keeps the VNode tree on the mount container, while omitting
+  // the development-only __vueParentComponent links on individual DOM elements.
+  const appRoot = { _vnode: { el: playerElement, component: { proxy: {}, subTree: { children: [
+    { component: { proxy: context, subTree: { children: [{ el: playerElement }] } } },
+  ] } } } };
   class Xhr {
     handlers = new Map();
     open(method, url) { this.url = String(url); }
@@ -64,7 +70,8 @@ function player({ video = null, context = null, launchMpv = async () => {}, with
       get baseURI() { return page.href; },
       querySelector(selector) {
         if (selector === 'video' || selector === 'video.video-element') return video;
-        if (selector === '.player-container' && context) return { __vueParentComponent: { ctx: context } };
+        if (selector === '.player-container') return playerElement;
+        if (selector === '#app') return appRoot;
         return null;
       },
       addEventListener() {},
@@ -337,4 +344,16 @@ test('Full handoff freezes high quality and identity before muting and lowering 
   assert.equal(storage.get('quality__3_1'),'1080');assert.equal(context.qualityPreset,'1080');
   sample={...sample,position:120,paused:true};await app.tick();assert.equal(video.currentTime,120);assert.equal(video.paused,true);
   sample=null;await app.tick();assert.equal(context.quality,'1080');assert.equal(video.muted,false);
+});
+
+test('Production Vue handoff lowers quality without DOM development hooks', async () => {
+  const video={currentTime:42,paused:false,muted:false,volume:.8,playbackRate:1,pause(){this.paused=true},async play(){this.paused=false}};
+  const context={anime_id:1,episode:2,translations_id:3,quality:'1080',qualityPreset:'1080',GetQualities:[{id:'1080'},{id:'360'}],async changeQuality(choice){this.quality=choice.id;this.videoSrc=`/${choice.id}.m3u8`}};
+  const sample={sessionId:'production',mediaKey:'1:2:3',ready:true,position:42,speed:1,paused:false};
+  const app=player({video,context,productionVue:true,withSession:true,launchMpv:async()=>({sessionId:'production',mirrorEmbedded:true}),getMpvState:async()=>sample});
+  await app.fetch('/api/episodes/2',{links:{1080:'/best.m3u8',360:'/minimum.m3u8'}});
+  const args=await app.launch();
+  assert.equal(args.media.key,'1:2:3');
+  assert.equal(context.quality,'360');assert.equal(context.videoSrc,'/360.m3u8');
+  assert.equal(video.muted,true);assert.equal(video.paused,false);
 });
