@@ -1,4 +1,7 @@
-param([Parameter(Mandatory = $true)][string]$Exe)
+param(
+    [Parameter(Mandatory = $true)][string]$Exe,
+    [switch]$SkipForegroundCheck
+)
 
 $ErrorActionPreference = 'Stop'
 Add-Type @'
@@ -23,6 +26,9 @@ if (Get-Process -Name anivox -ErrorAction SilentlyContinue | Where-Object { $_.P
     throw 'Close existing instances of the executable under test before running this test'
 }
 $testProcesses = [System.Collections.Generic.List[System.Diagnostics.Process]]::new()
+if ($SkipForegroundCheck) {
+    Write-Output 'Foreground assertion skipped: shared CI desktop cannot guarantee foreground activation. Visibility and restoration remain required.'
+}
 try {
     $first = Start-Process -FilePath $resolvedExe -PassThru -WindowStyle Hidden
     $testProcesses.Add($first)
@@ -66,8 +72,10 @@ try {
         $deadline = [DateTime]::UtcNow.AddSeconds(5)
         do {
             $restored = [AnivoxSingleInstanceTest]::IsWindowVisible($hwnd) -and
-                -not [AnivoxSingleInstanceTest]::IsIconic($hwnd) -and
-                [AnivoxSingleInstanceTest]::GetForegroundWindow() -eq $hwnd
+                -not [AnivoxSingleInstanceTest]::IsIconic($hwnd)
+            if (-not $SkipForegroundCheck) {
+                $restored = $restored -and [AnivoxSingleInstanceTest]::GetForegroundWindow() -eq $hwnd
+            }
             if (-not $restored) { Start-Sleep -Milliseconds 100 }
         } while (-not $restored -and [DateTime]::UtcNow -lt $deadline)
         $first.Refresh()
