@@ -29,5 +29,23 @@ Checks:
 - A controlled build-command harness verified native artifact selection,
   production integrity and target environment restoration on success/failure.
 - PowerShell parsing and all 87 JavaScript tests passed.
-- Full Rust speedup requires a warm CI run; no percentage speedup is claimed
-  from the isolated Bun measurements. A cold target still compiles dependencies.
+
+Completed Actions verification:
+
+- Release run 39465779988: Windows/Linux builds, native icons, visibility
+  restoration and publication all succeeded. v0.3.1 has 12 release assets;
+  latest.json has both updater platforms and identical release notes.
+- Warm run 39466592682: Windows job succeeded in 161 s; Linux in 273 s.
+  No release was republished by this workflow_dispatch run.
+
+| Windows step | Baseline (s) | Warm cache (s) |
+| --- | ---: | ---: |
+| Bun setup | 16 | 2 |
+| Rust tests | 69 | 8 |
+| cargo check | 46 | 1 |
+| Tauri application + installers | 148 | 64 |
+| Alternate-identity native EXE | 53 | 51 |
+
+The native EXE still spends about 51 s in preparation; it is not claimed to be
+instant. The measurements above cover one warm run on the same Windows runner,
+not a guarantee for clean builds, new dependencies or a changed toolchain.
