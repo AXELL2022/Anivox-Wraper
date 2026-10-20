@@ -2,7 +2,7 @@
 
 ## Назначение и сборка
 
-Tauri v2, Rust 2021, Windows/WebView2 и Linux/WebKitGTK 4.1. Идентификатор приложения — `com.yasin.anivox`, текущая версия — `0.3.0`. Целевой сайт — `https://anivox.fun/`. Пакетный менеджер JavaScript — Bun. Команды сборки и тестов приведены в README и AGENTS.
+Tauri v2, Rust 2021, Windows/WebView2 и Linux/WebKitGTK 4.1. Идентификатор приложения — `com.yasin.anivox`, текущая версия — `0.3.1`. Целевой сайт — `https://anivox.fun/`. Пакетный менеджер JavaScript — Bun. Команды сборки и тестов приведены в README и AGENTS.
 
 `src-tauri/src/main.rs` вызывает `anivox_lib::run()` и сохраняет подавление консоли Windows release. Backend остаётся в `src-tauri/src/lib.rs`; frontendDist в tauri.conf.json указывает на `../ui`. Корневой шаблонный `src/` удалён.
 
