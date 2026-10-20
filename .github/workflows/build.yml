@@ -72,17 +72,21 @@ jobs:
         with:
           node-version: 24
 
+      - name: Configure persistent Windows Rust builds
+        if: matrix.platform == 'windows'
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-ci-rust.ps1
+
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
 
       - name: Rust Cache
+        if: matrix.platform == 'linux'
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
-          # Self-hosted Windows shares Cargo with local development. The cache
-          # post-step deletes pre-existing bin files, including rustup proxies.
+          # Windows retains its full local target; do not prune it for upload.
           cache-bin: false
 
       - name: Install Linux system dependencies
@@ -157,13 +161,13 @@ jobs:
         with:
           name: anivox-windows
           path: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/nsis/*.exe.sig
-            src-tauri/target/release/bundle/nsis/*.zip*
-            src-tauri/target/release/bundle/msi/*.msi
-            src-tauri/target/release/bundle/msi/*.msi.sig
-            src-tauri/target/release/bundle/msi/*.zip*
-            src-tauri/target/release/anivox.exe
+            ${{ env.CARGO_TARGET_DIR }}/release/bundle/nsis/*.exe
+            ${{ env.CARGO_TARGET_DIR }}/release/bundle/nsis/*.exe.sig
+            ${{ env.CARGO_TARGET_DIR }}/release/bundle/nsis/*.zip*
+            ${{ env.CARGO_TARGET_DIR }}/release/bundle/msi/*.msi
+            ${{ env.CARGO_TARGET_DIR }}/release/bundle/msi/*.msi.sig
+            ${{ env.CARGO_TARGET_DIR }}/release/bundle/msi/*.zip*
+            ${{ env.CARGO_TARGET_DIR }}/release/anivox.exe
           if-no-files-found: warn
 
       - name: Upload Arch Linux Package (.pkg.tar.zst)
