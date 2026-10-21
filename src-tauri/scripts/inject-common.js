@@ -568,17 +568,20 @@
         }
     }
 
+    const DOUBLE_CLICK_INTERVAL_MS = 250;
     let initialPlaying = null;
-    let lastInteractionTime = 0;
+    let lastInteractionTime = -Infinity;
+    let clickInterval = Infinity;
 
     window.addEventListener('mousedown', (e) => {
         const rawTarget = (e.composedPath && e.composedPath()[0]) || e.target;
         if (!rawTarget || !rawTarget.closest) return;
         if (!rawTarget.closest('.player-container, video, .player, [class*="player"]')) return;
-        if (isPlayerControl(rawTarget)) return;
+        if (isPlayerControl(rawTarget) || e.button !== 0) return;
 
-        const now = Date.now();
-        if (now - lastInteractionTime > 400) {
+        const now = performance.now();
+        clickInterval = now - lastInteractionTime;
+        if (clickInterval > DOUBLE_CLICK_INTERVAL_MS) {
             const v = document.querySelector('video.video-element') || document.querySelector('video');
             initialPlaying = v ? !v.paused : null;
         }
@@ -594,6 +597,11 @@
 
         e.preventDefault();
         e.stopPropagation();
+
+        // Suppress the site's/system's longer double-click window as well.
+        if (clickInterval > DOUBLE_CLICK_INTERVAL_MS) return;
+        clickInterval = Infinity;
+        lastInteractionTime = -Infinity;
 
         togglePlayerFullscreen(rawTarget);
 

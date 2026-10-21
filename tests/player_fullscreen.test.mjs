@@ -1,7 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import vm from 'node:vm';
 
-// Helper extracting the embedded player script logic from lib.rs or running a simulated DOM environment
+const source = readFileSync(new URL('../src-tauri/scripts/inject-common.js', import.meta.url), 'utf8');
+const fullscreenScript = source.slice(source.indexOf('    function isPlayerControl('), source.indexOf('    function setupCommonStyles('));
+
+// Run the production fullscreen handlers against a simulated DOM and clock.
 function createMockEnvironment({ isFullscreen = false, isPlaying = true } = {}) {
   let fullscreenElement = isFullscreen ? {} : null;
   const events = new Map();
@@ -72,117 +77,20 @@ function createMockEnvironment({ isFullscreen = false, isPlaying = true } = {}) 
     },
   };
 
-  // Setup the logic under test
-  function isPlayerControl(el) {
-    if (!el || !el.closest) return false;
-    const controlSelector = [
-      'button',
-      'input',
-      'select',
-      'textarea',
-      'a',
-      '[role="button"]',
-      '[role="slider"]',
-      '[role="menu"]',
-      '[role="dialog"]',
-      '.controls-bar',
-      '.progress-bar',
-      '.volume',
-      '.volume-icon',
-      '.setting-button',
-      '.chrome-cast',
-      '.buttons',
-      '.custom-dropdown__items__mobile',
-      '.modal__body',
-      '.modal__content',
-      '.verify',
-      '.ad-skip-btn',
-      '.ad-mute-btn',
-      '.skip_button',
-      '.player-toasts'
-    ].join(',');
-    return !!el.closest(controlSelector);
-  }
-
-  function togglePlayerFullscreen(target) {
-    const playerEls = [
-      target && target.closest ? target.closest('.player-container') : null,
-      document.querySelector('.player-container'),
-      document.querySelector('video.video-element'),
-      document.querySelector('video')
-    ];
-    for (const el of playerEls) {
-      if (!el) continue;
-      const comp = el.__vueParentComponent || el._vnode?.component || el.__vue_app__;
-      if (comp) {
-        const ctx = comp.proxy || comp.ctx || comp.setupState;
-        if (ctx && typeof ctx.toggleFullscreen === 'function') {
-          ctx.toggleFullscreen();
-          return;
-        }
-      }
-    }
-
-    if (document.fullscreenElement) {
-      if (document.exitFullscreen) {
-        document.exitFullscreen();
-      }
-    } else {
-      const container = (target && target.closest ? (target.closest('.player-container') || target.closest('.player')) : null)
-        || document.querySelector('.player-container')
-        || document.querySelector('video');
-      if (container && container.requestFullscreen) {
-        container.requestFullscreen();
-      }
-    }
-  }
-
-  let initialPlaying = null;
-  let lastInteractionTime = 0;
-
-  window.addEventListener('mousedown', (e) => {
-    const rawTarget = (e.composedPath && e.composedPath()[0]) || e.target;
-    if (!rawTarget || !rawTarget.closest) return;
-    if (!rawTarget.closest('.player-container, video, .player, [class*="player"]')) return;
-    if (isPlayerControl(rawTarget)) return;
-
-    const now = Date.now();
-    if (now - lastInteractionTime > 400) {
-      const v = document.querySelector('video.video-element') || document.querySelector('video');
-      initialPlaying = v ? !v.paused : null;
-    }
-    lastInteractionTime = now;
-  });
-
-  window.addEventListener('dblclick', (e) => {
-    const rawTarget = (e.composedPath && e.composedPath()[0]) || e.target;
-    if (!rawTarget || !rawTarget.closest) return;
-    const player = rawTarget.closest('.player-container, video, .player, [class*="player"]');
-    if (!player) return;
-    if (isPlayerControl(rawTarget)) return;
-
-    e.defaultPrevented = true;
-    e.propagationStopped = true;
-
-    togglePlayerFullscreen(rawTarget);
-
-    if (initialPlaying !== null) {
-      const expected = initialPlaying;
-      setTimeout(() => {
-        const v = document.querySelector('video.video-element') || document.querySelector('video');
-        if (v) {
-          if (expected && v.paused) {
-            v.play();
-          } else if (!expected && !v.paused) {
-            v.pause();
-          }
-        }
-      }, 60);
-    }
-  });
+  let now = 1000;
+  vm.runInNewContext(fullscreenScript, { window, document, console, setTimeout, performance: { now: () => now } });
 
   return {
     window,
+    advance(ms) { now += ms; },
+    click(target, interval = 100) {
+      window.dispatchEvent('mousedown', { target, button: 0 });
+      now += interval;
+      window.dispatchEvent('mousedown', { target, button: 0 });
+      const event = { target, preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.propagationStopped = true; } };
+      window.dispatchEvent('dblclick', event);
+      return event;
+    },
     document,
     video,
     playerContainer,
@@ -204,11 +112,7 @@ test('Double-clicking on video player area toggles fullscreen into fullscreen', 
     },
   };
 
-  const evt1 = { target: touchZone };
-  env.window.dispatchEvent('mousedown', evt1);
-
-  const dblEvt = { target: touchZone };
-  env.window.dispatchEvent('dblclick', dblEvt);
+  const dblEvt = env.click(touchZone);
 
   assert.equal(env.vueToggleFullscreenCalled, 1);
   assert.equal(env.document.fullscreenElement, env.playerContainer);
@@ -227,11 +131,7 @@ test('Double-clicking while in fullscreen exits fullscreen', async () => {
     },
   };
 
-  const evt1 = { target: touchZone };
-  env.window.dispatchEvent('mousedown', evt1);
-
-  const dblEvt = { target: touchZone };
-  env.window.dispatchEvent('dblclick', dblEvt);
+  const dblEvt = env.click(touchZone);
 
   assert.equal(env.vueToggleFullscreenCalled, 1);
   assert.equal(env.document.fullscreenElement, null);
@@ -250,14 +150,10 @@ test('Double-clicking on player controls is ignored', async () => {
     },
   };
 
-  const evt1 = { target: button };
-  env.window.dispatchEvent('mousedown', evt1);
-
-  const dblEvt = { target: button, defaultPrevented: false };
-  env.window.dispatchEvent('dblclick', dblEvt);
+  const dblEvt = env.click(button);
 
   assert.equal(env.vueToggleFullscreenCalled, 0);
-  assert.equal(dblEvt.defaultPrevented, false);
+  assert.notEqual(dblEvt.defaultPrevented, true);
 });
 
 test('Fallback to native requestFullscreen and exitFullscreen when Vue context is absent', async () => {
@@ -265,15 +161,13 @@ test('Fallback to native requestFullscreen and exitFullscreen when Vue context i
   delete env.playerContainer.__vueParentComponent;
 
   const target = env.playerContainer;
-  env.window.dispatchEvent('mousedown', { target });
-  env.window.dispatchEvent('dblclick', { target });
+  env.click(target);
 
   assert.equal(env.nativeRequestFullscreenCalled, 1);
   assert.equal(env.document.fullscreenElement, env.playerContainer);
 
   // Now exit fullscreen
-  env.window.dispatchEvent('mousedown', { target });
-  env.window.dispatchEvent('dblclick', { target });
+  env.click(target);
 
   assert.equal(env.nativeExitFullscreenCalled, 1);
   assert.equal(env.document.fullscreenElement, null);
@@ -292,11 +186,13 @@ test('Playback state is restored if single clicks inverted play state during dou
   };
 
   // First click pauses video
-  env.window.dispatchEvent('mousedown', { target: touchZone });
+  env.window.dispatchEvent('mousedown', { target: touchZone, button: 0 });
   env.video.pause();
 
   // Double click fires, video was left paused
-  env.window.dispatchEvent('dblclick', { target: touchZone });
+  env.advance(100);
+  env.window.dispatchEvent('mousedown', { target: touchZone, button: 0 });
+  env.window.dispatchEvent('dblclick', { target: touchZone, preventDefault() {}, stopPropagation() {} });
 
   // Wait for recovery timeout
   await new Promise(r => setTimeout(r, 80));
@@ -304,4 +200,24 @@ test('Playback state is restored if single clicks inverted play state during dou
   // Should have been restored to play
   assert.equal(env.video.paused, false);
   assert.equal(env.video.playCalled, 1);
+});
+
+test('Double-click threshold accepts 250 ms but suppresses slower system double-clicks', () => {
+  for (const interval of [250, 251, 400]) {
+    const env = createMockEnvironment();
+    const event = env.click(env.playerContainer, interval);
+    assert.equal(env.vueToggleFullscreenCalled, interval <= 250 ? 1 : 0);
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(event.propagationStopped, true);
+  }
+});
+
+test('Single clicks and right clicks do not toggle fullscreen', () => {
+  const env = createMockEnvironment();
+  const target = env.playerContainer;
+  env.window.dispatchEvent('mousedown', { target, button: 0 });
+  assert.equal(env.vueToggleFullscreenCalled, 0);
+  env.advance(100);
+  env.window.dispatchEvent('mousedown', { target, button: 2 });
+  assert.equal(env.vueToggleFullscreenCalled, 0);
 });
