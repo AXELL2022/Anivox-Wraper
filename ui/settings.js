@@ -1,4 +1,37 @@
 const { invoke } = window.__TAURI__.core;
+const startup = document.querySelector('#startup-page');
+const saveSession = document.querySelector('#save-session');
+const sessionStatus = document.querySelector('#session-status');
+let sessionBusy = false;
+let sessionLoaded = false;
+async function sessionAction(action) {
+  if (sessionBusy) return;
+  sessionBusy = true;
+  startup.disabled = saveSession.disabled = true;
+  try { await action(); }
+  catch (err) { sessionStatus.textContent = `Не удалось сохранить/загрузить запуск: ${err}`; }
+  finally {
+    sessionBusy = false;
+    startup.disabled = !sessionLoaded;
+    saveSession.disabled = false;
+  }
+}
+async function loadSession() {
+  const info = await invoke('get_session_settings');
+  if (!info || !['home', 'lastPage'].includes(info.startupPage)) throw new Error('Некорректные настройки запуска');
+  startup.value = info.startupPage;
+  sessionLoaded = true;
+}
+document.querySelector('#session-form').addEventListener('submit', event => {
+  event.preventDefault();
+  return sessionAction(async () => {
+    if (!sessionLoaded) { await loadSession(); sessionStatus.textContent = 'Настройки загружены. Выберите вариант запуска.'; return; }
+    const info = await invoke('save_session_settings', { startupPage: startup.value });
+    startup.value = info.startupPage;
+    sessionStatus.textContent = 'Вариант запуска сохранён.';
+  });
+});
+sessionAction(loadSession);
 const input = document.querySelector('#mpv-path');
 const browse = document.querySelector('#browse');
 const save = document.querySelector('#save');

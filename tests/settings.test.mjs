@@ -42,6 +42,38 @@ test('Settings errors preserve input and allow retry; Escape only closes the loc
   assert.equal(closed, 1);
 });
 
+test('Session startup setting loads and saves independently of player settings', async () => {
+  const saved = [];
+  const app = await localWindow('../ui/settings.js', async (command, args) => {
+    if (command === 'get_session_settings') return {startupPage:'home'};
+    if (command === 'save_session_settings') { saved.push(args.startupPage); return args; }
+    return {mpvPath:null,logDirectory:'logs'};
+  });
+  assert.equal(app.element('#startup-page').value,'home');
+  app.element('#startup-page').value='lastPage';
+  await app.element('#session-form').handlers.submit({preventDefault(){}});
+  assert.deepEqual(saved,['lastPage']);
+  assert.equal(app.element('#save-session').disabled,false);
+});
+
+test('Session failed load must be retried before it can overwrite the preference', async () => {
+  let loads = 0, saves = 0;
+  const app = await localWindow('../ui/settings.js', async command => {
+    if (command === 'get_session_settings') { if (++loads === 1) throw new Error('disk failure'); return {startupPage:'home'}; }
+    if (command === 'save_session_settings') { saves++; throw new Error('write denied'); }
+    return {logDirectory:'logs'};
+  });
+  assert.equal(app.element('#startup-page').disabled,true);
+  assert.match(app.element('#session-status').textContent,/disk failure/);
+  await app.element('#session-form').handlers.submit({preventDefault(){}});
+  assert.equal(saves,0);
+  assert.equal(app.element('#startup-page').value,'home');
+  await app.element('#session-form').handlers.submit({preventDefault(){}});
+  assert.equal(saves,1);
+  assert.match(app.element('#session-status').textContent,/write denied/);
+  assert.equal(app.element('#save-session').disabled,false);
+});
+
 test('Settings exposes mirror preference and clears local playback history', async () => {
   const calls = [];
   const app = await localWindow('../ui/settings.js', async (command, args) => {

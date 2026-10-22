@@ -2,6 +2,9 @@
 * { box-sizing: border-box; }
 body { margin: 0; padding: 24px; }
 h1 { margin: 0 0 20px; font-size: 22px; color: #ffa9de; }
+select { width: 100%; padding: 10px; border: 1px solid #51434e; border-radius: 6px; background: #1f1f23; color: inherit; font: inherit; }
+h2 { margin-top: 24px; font-size: 16px; }
+#session-status { min-height: 20px; overflow-wrap: anywhere; }
 p { line-height: 1.5; }
 label { display: block; margin-bottom: 8px; font-weight: 600; }
 input { width: 100%; min-width: 0; padding: 10px; border: 1px solid #51434e; border-radius: 6px; background: #1f1f23; color: inherit; font: inherit; }

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "site-recovery",
+  "description": "Isolated local site loading and recovery UI",
+  "webviews": ["site-recovery"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten", "allow-site-recovery"]
+}

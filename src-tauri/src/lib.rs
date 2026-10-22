@@ -8,6 +8,12 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 
+mod session;
+mod site_recovery;
+mod tray_settings;
+use std::sync::atomic::Ordering;
+use tray_settings::TrayState;
+
 const TOOLBAR_HEIGHT: f64 = 40.0;
 const SHIKIMORI_MARGIN: f64 = 16.0;
 const SHIKIMORI_HEADER: f64 = 40.0;
@@ -127,9 +133,9 @@ struct BrowserState {
 }
 
 #[cfg(target_os = "linux")]
-fn layout_webviews(_window: &tauri::Window) -> tauri::Result<()> {
-    // Linux uses one webview with an injected toolbar; it fills the window itself.
-    Ok(())
+fn layout_webviews(window: &tauri::Window) -> tauri::Result<()> {
+    // The site fills the window; only the native local recovery child needs bounds.
+    site_recovery::layout(window)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -160,6 +166,7 @@ fn layout_webviews(window: &tauri::Window) -> tauri::Result<()> {
             size: tauri::LogicalSize::new(size.width, (size.height - top).max(1.0)).into(),
         })?;
     }
+    site_recovery::layout(window)?;
     layout_shikimori(window, top)?;
     Ok(())
 }
@@ -450,6 +457,19 @@ fn report_player_status(
     .map_err(|err| err.to_string())
 }
 
+fn handle_content_load(webview: tauri::Webview, payload: tauri::webview::PageLoadPayload<'_>) {
+    if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+        tauri::async_runtime::spawn(async move {
+            let _ = content_fullscreen(webview.window(), false).await;
+        });
+    } else if site_recovery::is_external_document(payload.url()) {
+        // Only a real external HTTP(S) document (e.g. login) may complete here.
+        // WebView2 also finishes about:blank/error documents during startup/failure;
+        // those must never dismiss recovery or cancel its watchdog.
+        site_recovery::ready(webview.app_handle());
+    }
+}
+
 #[tauri::command]
 async fn browser_action(
     app: tauri::AppHandle,
@@ -462,6 +482,7 @@ async fn browser_action(
         "back" => content.eval("window.history.back()"),
         "forward" => content.eval("window.history.forward()"),
         "reload" => {
+            site_recovery::begin(&app);
             let last_url = app
                 .state::<BrowserState>()
                 .url
@@ -2001,12 +2022,17 @@ pub fn run() {
         .manage(DiscordState(Mutex::new(None)))
         .manage(ShikimoriState::default())
         .manage(PlayerSettingsState::default())
+        .manage(TrayState::default())
         .manage(MpvState::default())
         .manage(UpdateState::default())
+        .manage(site_recovery::SiteLoadState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .setup(|app| {
+            let startup_url = session::initialize(app.handle())?;
+            *app.state::<BrowserState>().url.lock().unwrap() = startup_url.clone();
+            site_recovery::begin(app.handle());
             // All traffic goes completely through system network settings (system DNS, routes, etc.)
             #[cfg(target_os = "windows")]
             const SCRIPT: &str = concat!(
@@ -2029,7 +2055,12 @@ pub fn run() {
             #[cfg(not(any(target_os = "windows", target_os = "linux")))]
             const SCRIPT: &str = concat!(include_str!("../scripts/mpv-session.js"), "\n", include_str!("../scripts/inject-common.js"));
 
-            let script = SCRIPT;
+            let restore_guard = if startup_url.as_str() != session::HOME_URL {
+                let token = format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
+                format!(";if (location.origin === 'https://anivox.fun' && sessionStorage.getItem('anivox-restore-unlocked') !== '{token}') {{ window.__anivoxRestoreToken = '{token}'; {} }}", include_str!("../scripts/restore-paused.js"))
+            } else { String::new() };
+            let script_storage = format!("{}\n{}\n{}", restore_guard, SCRIPT, include_str!("../scripts/site-lifecycle.js"));
+            let script = script_storage.as_str();
 
             #[cfg(target_os = "linux")]
             let script_storage = add_linux_toolbar_script(script);
@@ -2060,7 +2091,7 @@ pub fn run() {
                 tauri::WebviewWindowBuilder::new(
                     app,
                     "content",
-                    tauri::WebviewUrl::External("https://anivox.fun/".parse().unwrap()),
+                    tauri::WebviewUrl::External(startup_url.clone()),
                 )
                 .title("Anivox")
                 .inner_size(1280.0, 720.0)
@@ -2072,12 +2103,15 @@ pub fn run() {
                     if !matches!(url.scheme(), "https" | "http") {
                         return false;
                     }
+                    site_recovery::begin(&navigation_app);
                     if let Ok(mut last_url) = navigation_app.state::<BrowserState>().url.lock() {
                         *last_url = url.clone();
                     }
                     true
                 })
+                .on_page_load(|webview, payload| handle_content_load(webview, payload))
                 .build()?;
+                if let Some(window) = app.get_window("content") { if let Err(err) = session::restore_geometry(&window) { eprintln!("Не удалось восстановить окно: {err}"); } }
             }
 
             #[cfg(not(target_os = "linux"))]
@@ -2088,6 +2122,7 @@ pub fn run() {
                     .inner_size(1280.0, 720.0)
                     .min_inner_size(420.0, 300.0)
                     .build()?;
+                if let Err(err) = session::restore_geometry(&window) { eprintln!("Не удалось восстановить окно: {err}"); }
                 #[cfg(target_os = "windows")]
                 set_windows_taskbar_icon(&window)?;
                 window.add_child(
@@ -2100,29 +2135,31 @@ pub fn run() {
                 window.add_child(
                     tauri::webview::WebviewBuilder::new(
                         "content",
-                        tauri::WebviewUrl::External("https://anivox.fun/".parse().unwrap()),
+                        tauri::WebviewUrl::External(startup_url.clone()),
                     )
                     .initialization_script(script)
                     .additional_browser_args(browser_args)
                     .on_navigation(move |url| {
                         if !matches!(url.scheme(), "https" | "http") { return false; }
-                        if let Ok(mut last_url) = navigation_app.state::<BrowserState>().url.lock() {
+                        site_recovery::begin(&navigation_app);
+                    if let Ok(mut last_url) = navigation_app.state::<BrowserState>().url.lock() {
                             *last_url = url.clone();
                         }
                         true
                     })
-                    .on_page_load(|webview, payload| {
-                        if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
-                            tauri::async_runtime::spawn(async move {
-                                let _ = content_fullscreen(webview.window(), false).await;
-                            });
-                        }
-                    }),
+                    .on_page_load(handle_content_load),
                     tauri::LogicalPosition::new(0.0, TOOLBAR_HEIGHT),
                     tauri::LogicalSize::new(1280.0, 720.0 - TOOLBAR_HEIGHT),
                 )?;
                 layout_webviews(&window)?;
             }
+
+            let recovery_app = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(err) = site_recovery::create(&recovery_app).await {
+                    eprintln!("Не удалось создать экран восстановления: {err}");
+                }
+            });
 
             let handle = app.handle().clone();
             // Initialize Discord RPC on startup
@@ -2152,13 +2189,33 @@ pub fn run() {
 
             let quit_item = tauri::menu::MenuItem::with_id(app, "quit", "Выход", true, None::<&str>)?;
             let show_item = tauri::menu::MenuItem::with_id(app, "show", "Открыть", true, None::<&str>)?;
-            let menu = tauri::menu::Menu::with_items(app, &[&show_item, &quit_item])?;
+            let tray_settings_path = app.path().app_config_dir()?.join("tray.json");
+            let minimize_to_tray = tray_settings::load(&tray_settings_path).unwrap_or_else(|err| {
+                eprintln!("Не удалось загрузить настройку трея: {err}");
+                true
+            });
+            app.state::<TrayState>().0.store(minimize_to_tray, Ordering::Relaxed);
+            let minimize_item = tauri::menu::CheckMenuItem::with_id(
+                app, "minimize_to_tray", "Сворачивать в трей", true, minimize_to_tray, None::<&str>,
+            )?;
+            let menu = tauri::menu::Menu::with_items(app, &[&show_item, &minimize_item, &quit_item])?;
 
             let mut tray_builder = tauri::tray::TrayIconBuilder::new()
                 .tooltip("Anivox")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
-                .on_menu_event(|app, event| match event.id().as_ref() {
+                .on_menu_event(move |app, event| match event.id().as_ref() {
+                    "minimize_to_tray" => {
+                        let previous = app.state::<TrayState>().0.load(Ordering::Relaxed);
+                        let enabled = !previous;
+                        if let Err(err) = tray_settings::save(&tray_settings_path, enabled) {
+                            eprintln!("Не удалось сохранить настройку трея: {err}");
+                            let _ = minimize_item.set_checked(previous);
+                        } else {
+                            app.state::<TrayState>().0.store(enabled, Ordering::Relaxed);
+                            let _ = minimize_item.set_checked(enabled);
+                        }
+                    }
                     "show" => {
                         if let Some(w) = app.get_window("main").or_else(|| app.get_window("content")) {
                             let _ = w.show();
@@ -2167,6 +2224,8 @@ pub fn run() {
                         }
                     }
                     "quit" => {
+                        if let Some(window) = app.get_window("main").or_else(|| app.get_window("content")) { if let Err(err) = session::capture_geometry(&window) { eprintln!("Не удалось запомнить окно: {err}"); } }
+                        if let Err(err) = session::flush(app) { eprintln!("Не удалось сохранить сеанс: {err}"); }
                         if is_vpn_active() {
                             let _ = disconnect_vpn(false);
                         }
@@ -2206,15 +2265,21 @@ pub fn run() {
         .on_window_event(|window, event| {
             if !is_primary_window(window.label()) { return; }
             match event {
+            tauri::WindowEvent::Moved(_) => site_recovery::schedule_geometry_save(window),
             tauri::WindowEvent::Resized(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
+                site_recovery::schedule_geometry_save(window);
                 let window = window.clone();
                 tauri::async_runtime::spawn_blocking(move || {
                     let _ = layout_webviews(&window);
                 });
             }
             tauri::WindowEvent::CloseRequested { api, .. } => {
-                api.prevent_close();
-                let _ = window.hide();
+                if let Err(err) = session::capture_geometry(window) { eprintln!("Не удалось запомнить окно: {err}"); }
+                if let Err(err) = session::flush(window.app_handle()) { eprintln!("Не удалось сохранить сеанс: {err}"); }
+                if window.app_handle().state::<TrayState>().0.load(Ordering::Relaxed) {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
             tauri::WindowEvent::Destroyed => {
                 if is_vpn_active() {
@@ -2230,6 +2295,12 @@ pub fn run() {
             get_vpn_status,
             toggle_vpn,
             browser_action,
+            site_recovery::get_site_load_state,
+            site_recovery::site_recovery_action,
+            site_recovery::site_document_state,
+            site_recovery::get_site_document_generation,
+            session::get_session_settings,
+            session::save_session_settings,
             report_player_status,
             content_fullscreen,
             open_in_mpv,

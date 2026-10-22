@@ -1,0 +1,14 @@
+[[permission]]
+identifier = "allow-session-settings"
+description = "Read and save startup preference from the local settings window only"
+commands.allow = ["get_session_settings", "save_session_settings"]
+
+[[permission]]
+identifier = "allow-site-lifecycle"
+description = "Report the trusted Anivox document and route lifecycle"
+commands.allow = ["site_document_state", "get_site_document_generation"]
+
+[[permission]]
+identifier = "allow-site-recovery"
+description = "Read site load state and retry from the isolated local recovery view"
+commands.allow = ["get_site_load_state", "site_recovery_action"]
