@@ -457,6 +457,17 @@ fn report_player_status(
     .map_err(|err| err.to_string())
 }
 
+// Keep the WebviewWindow adapter compiled on every host so Windows checks also
+// catch signature regressions in the Linux builder callback.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn handle_content_window_load(
+    window: tauri::WebviewWindow,
+    payload: tauri::webview::PageLoadPayload<'_>,
+) {
+    let webview: &tauri::Webview = window.as_ref();
+    handle_content_load(webview.clone(), payload);
+}
+
 fn handle_content_load(webview: tauri::Webview, payload: tauri::webview::PageLoadPayload<'_>) {
     if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
         tauri::async_runtime::spawn(async move {
@@ -2109,7 +2120,7 @@ pub fn run() {
                     }
                     true
                 })
-                .on_page_load(|webview, payload| handle_content_load(webview, payload))
+                .on_page_load(handle_content_window_load)
                 .build()?;
                 if let Some(window) = app.get_window("content") { if let Err(err) = session::restore_geometry(&window) { eprintln!("Не удалось восстановить окно: {err}"); } }
             }
