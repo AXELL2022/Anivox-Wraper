@@ -28,6 +28,11 @@ test('macOS backend has no legacy integration or remote command registration', (
   assert.doesNotMatch(source, /generate_handler!|discord_rich_presence|disconnect_vpn|open_in_mpv|include_str!/);
   assert.match(source, /tauri_plugin_updater/);
   assert.match(source, /macos-main/);
+  assert.match(source, /if !confirm_install\(app, prompt\)\.await\?/);
+  assert.match(source, /update\.version != reviewed\.version/);
+  assert.match(source, /update\.download_url != reviewed\.download_url/);
+  assert.match(source, /update\.signature != reviewed\.signature/);
+  assert.ok(source.indexOf('if !confirm_install') < source.indexOf('.download('));
 });
 
 test('experimental CI only uploads artifacts with read-only repository access', () => {
