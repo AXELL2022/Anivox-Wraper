@@ -1,0 +1,60 @@
+name: Experimental macOS Minimal
+
+on:
+  push:
+    branches: ['experimental/macos-minimal']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-minimal-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Minimal macOS (${{ matrix.target }})
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [aarch64-apple-darwin, x86_64-apple-darwin]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version-file: .bun-version
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          key: macos-minimal-${{ matrix.target }}
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+      - name: Verify minimal build boundaries
+        run: node --test tests/macos_minimal.test.mjs
+      - name: Check and test macOS Rust code
+        run: |
+          cargo check --locked --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }}
+          cargo test --locked --manifest-path src-tauri/Cargo.toml --target aarch64-apple-darwin
+      - name: Build app, DMG and signed updater archive
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: '-'
+        run: bun run tauri build --target ${{ matrix.target }}
+      - name: Upload experimental artifacts (no release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: anivox-macos-minimal-${{ matrix.target }}
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz.sig
+          if-no-files-found: error

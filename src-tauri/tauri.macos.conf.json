@@ -1,0 +1,22 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "app": {
+    "withGlobalTauri": false,
+    "security": {
+      "capabilities": [
+        {
+          "identifier": "macos-minimal",
+          "description": "No remote IPC permissions for the minimal macOS view",
+          "windows": ["macos-main"],
+          "permissions": []
+        }
+      ]
+    }
+  },
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "macOS": {
+      "minimumSystemVersion": "11.0"
+    }
+  }
+}

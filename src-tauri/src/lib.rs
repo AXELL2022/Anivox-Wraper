@@ -1,3 +1,6 @@
+// The experimental macOS binary has a separate minimal entry point.
+#![cfg(not(target_os = "macos"))]
+
 use discord_rich_presence::{activity, DiscordIpc, DiscordIpcClient};
 use std::path::{Path, PathBuf};
 use std::process::Command;
