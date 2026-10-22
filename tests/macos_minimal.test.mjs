@@ -4,11 +4,14 @@ import { readFileSync } from 'node:fs';
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
-test('macOS config disables remote bridge and capabilities', () => {
+test('macOS config exposes only origin-scoped Discord IPC', () => {
   const config = JSON.parse(read('src-tauri/tauri.macos.conf.json'));
-  assert.equal(config.app.withGlobalTauri, false);
+  assert.equal(config.app.withGlobalTauri, true);
   assert.equal(config.app.security.capabilities.length, 1);
-  assert.deepEqual(config.app.security.capabilities[0].permissions, []);
+  const capability = JSON.parse(read('src-tauri/capabilities/macos-discord.json'));
+  assert.deepEqual(capability.permissions, ['allow-set-discord-rpc']);
+  assert.deepEqual(capability.remote.urls, ['https://anivox.fun/*']);
+  assert.deepEqual(capability.webviews, ['macos-main']);
   assert.deepEqual(config.bundle.targets, ['app', 'dmg']);
 });
 
@@ -19,13 +22,16 @@ test('macOS uses a separate entry point and excludes legacy library', () => {
   const cargo = read('src-tauri/Cargo.toml');
   const integrations = cargo.indexOf(`[target.'cfg(not(target_os = "macos"))'.dependencies]`);
   assert.ok(integrations > 0);
-  assert.ok(cargo.indexOf('discord-rich-presence') > integrations);
+  assert.ok(cargo.indexOf('discord-rich-presence') < integrations);
   assert.ok(cargo.indexOf('tauri-plugin-opener') > integrations);
 });
 
-test('macOS backend has no legacy integration or remote command registration', () => {
+test('macOS backend excludes MPV and VPN and preserves reviewed updater', () => {
   const source = read('src-tauri/src/macos.rs');
-  assert.doesNotMatch(source, /generate_handler!|discord_rich_presence|disconnect_vpn|open_in_mpv|include_str!/);
+  assert.doesNotMatch(source, /disconnect_vpn|open_in_mpv|inject-common\.js|inject-windows\.js|inject-linux\.js/);
+  const injection = read('src-tauri/scripts/inject-macos.js');
+  assert.doesNotMatch(injection, /open_in_mpv|toggle_vpn|XMLHttpRequest|window\.fetch\s*=/);
+  assert.match(injection, /anivox-macos-controls/);
   assert.match(source, /tauri_plugin_updater/);
   assert.match(source, /macos-main/);
   assert.match(source, /if !confirm_install\(app, prompt\)\.await\?/);

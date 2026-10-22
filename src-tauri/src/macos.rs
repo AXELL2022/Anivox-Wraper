@@ -1,9 +1,19 @@
-//! Minimal macOS application. All application actions originate in native menus;
-//! the remote webview has no application commands or integration scripts.
+//! Minimal macOS application with native menus and origin-scoped Discord presence.
+
+#[path = "discord.rs"]
+mod discord;
+
+#[cfg(test)]
+use discord::{build_discord_activity, send_discord_activity};
+use discord::{update_discord_presence, DiscordPresence};
+#[cfg(test)]
+#[path = "discord_tests.rs"]
+mod discord_tests;
+use discord_rich_presence::DiscordIpcClient;
 
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
 
 use tauri::{
@@ -13,8 +23,89 @@ use tauri::{
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 use tauri_plugin_updater::UpdaterExt;
 
-// Deliberately does not match any integration-capable webview in capabilities/.
+// This view receives only the dedicated macos-discord capability.
 const WINDOW_LABEL: &str = "macos-main";
+
+#[derive(Default)]
+struct DiscordState(Mutex<Option<DiscordIpcClient>>);
+
+fn discord_caller_allowed(label: &str, url: &tauri::Url) -> bool {
+    label == WINDOW_LABEL
+        && url.scheme() == "https"
+        && url.host_str() == Some("anivox.fun")
+        && url.port_or_known_default() == Some(443)
+        && url.username().is_empty()
+        && url.password().is_none()
+}
+
+#[tauri::command]
+async fn set_discord_rpc(
+    webview: tauri::Webview,
+    app: AppHandle,
+    mut presence: DiscordPresence,
+) -> Result<(), String> {
+    let url = webview.url().map_err(|error| error.to_string())?;
+    if !discord_caller_allowed(webview.label(), &url) {
+        return Err("Discord presence is only available to the Anivox macOS view".into());
+    }
+    // Match the legacy command's Unicode character limits, not byte truncation.
+    presence.details = presence.details.chars().take(128).collect();
+    presence.state_text = presence.state_text.chars().take(128).collect();
+    // Discord handshakes and sends perform blocking local socket I/O. Serialize
+    // workers through the client mutex; a failed send drops it for reconnection
+    // on the next frontend heartbeat, just like the legacy application.
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<DiscordState>();
+        let mut client = state.0.lock().map_err(|error| error.to_string())?;
+        update_discord_presence(&mut client, &presence)
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[cfg(test)]
+mod caller_tests {
+    use super::*;
+
+    #[test]
+    fn only_the_anivox_https_origin_and_macos_view_are_allowed() {
+        for valid in [
+            "https://anivox.fun/",
+            "https://anivox.fun/anime/1",
+            "https://anivox.fun:443/watch",
+        ] {
+            assert!(discord_caller_allowed(
+                WINDOW_LABEL,
+                &valid.parse().unwrap()
+            ));
+        }
+        for invalid in [
+            "http://anivox.fun/",
+            "https://anivox.fun:444/",
+            "https://anivox.fun.evil.example/",
+            "https://sub.anivox.fun/",
+            "https://shikimori.io/",
+            "https://user:secret@anivox.fun/",
+            "tauri://localhost/",
+            "file:///index.html",
+        ] {
+            assert!(
+                !discord_caller_allowed(WINDOW_LABEL, &invalid.parse().unwrap()),
+                "{invalid}"
+            );
+        }
+        let url = "https://anivox.fun/".parse().unwrap();
+        for label in [
+            "content",
+            "toolbar",
+            "shikimori",
+            "main",
+            "macos-main-popup",
+        ] {
+            assert!(!discord_caller_allowed(label, &url), "{label}");
+        }
+    }
+}
 
 #[derive(Default)]
 struct UpdateState(Arc<AtomicBool>);
@@ -123,9 +214,10 @@ fn check_updates(app: &AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .manage(UpdateState::default())
+        .manage(DiscordState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
-        // No invoke_handler: the remote site cannot call any application command.
+        .invoke_handler(tauri::generate_handler![set_discord_rpc])
         .setup(|app| {
             let app_menu = SubmenuBuilder::new(app, "Anivox")
                 .about(None)
@@ -177,6 +269,7 @@ pub fn run() {
                 WebviewUrl::External("https://anivox.fun/".parse()?),
             )
             .title("Anivox")
+            .initialization_script(include_str!("../scripts/inject-macos.js"))
             .inner_size(1280.0, 800.0)
             .min_inner_size(640.0, 480.0)
             .resizable(true)

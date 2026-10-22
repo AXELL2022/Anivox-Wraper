@@ -38,7 +38,7 @@ jobs:
       - name: Install JS dependencies
         run: bun install --frozen-lockfile
       - name: Verify minimal build boundaries
-        run: node --test tests/macos_minimal.test.mjs
+        run: node --test tests/*.test.mjs
       - name: Check and test macOS Rust code
         run: |
           cargo check --locked --manifest-path src-tauri/Cargo.toml --target ${{ matrix.target }}

@@ -1,16 +1,9 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "app": {
-    "withGlobalTauri": false,
+    "withGlobalTauri": true,
     "security": {
-      "capabilities": [
-        {
-          "identifier": "macos-minimal",
-          "description": "No remote IPC permissions for the minimal macOS view",
-          "windows": ["macos-main"],
-          "permissions": []
-        }
-      ]
+      "capabilities": ["macos-discord"]
     }
   },
   "bundle": {

@@ -6,14 +6,16 @@ Branch: `experimental/macos-minimal`. This is a build experiment, not a tested m
 
 - A single WKWebView showing `https://anivox.fun/`.
 - Native application/navigation menu.
+- Portable dark player/control styling, 250 ms double-click fullscreen with playback-state preservation, and a small floating Back/Forward/Reload/Player Fullscreen control strip.
+- Discord Rich Presence using the shared Rust backend: anime/episode/season, artwork, public links, pause/buffering and speed-aware remaining timer. Heartbeat retries recover when Discord starts or restarts. Discord desktop must be installed/running.
 - Native, explicitly confirmed Tauri updater flow using the existing public key and HTTPS endpoint.
 - Separate Apple Silicon and Intel app/DMG artifacts from GitHub Actions.
 
 ## Deliberately excluded
 
-MPV, VPN/WireGuard, Discord presence, Shikimori overlay, custom Windows/Linux toolbar, tray integration, media mirroring, injected platform/player optimizations and remote application IPC.
+MPV, VPN/WireGuard, Shikimori overlay, custom Windows/Linux toolbar, tray integration, media mirroring and platform-specific video hacks.
 
-The macOS binary selects `src/macos.rs`; the existing library and integration dependencies are excluded on macOS. Windows/Linux keep their existing implementation. The automatically merged `tauri.macos.conf.json` disables the global JS bridge and capability selection. The remote view has a separate label and no custom IPC handler.
+The macOS binary selects `src/macos.rs`; the legacy integration library is excluded on macOS. Discord helpers are shared with Windows/Linux. The automatically merged `tauri.macos.conf.json` selects only a narrow Discord capability for the `macos-main` webview at `https://anivox.fun/*`; the command additionally validates its caller. Other origins receive no native permissions. `inject-macos.js` adds portable UI and observes real player state without intercepting media requests or loading MPV scripts.
 
 ## Build
 
