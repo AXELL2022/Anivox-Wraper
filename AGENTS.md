@@ -16,7 +16,7 @@ Anivox is a Tauri v2 desktop wrapper for `https://anivox.fun/`, with a Rust back
 - `src-tauri/tauri.conf.json`: application identity, bundle settings, global Tauri bridge, and local asset directory (`../ui`). The main window and child webviews are created in Rust using Tauri's `unstable` multiwebview feature.
 - `src-tauri/permissions/*.toml`: custom IPC permission definitions.
 - `src-tauri/capabilities/default.json`: remote media/Discord permissions scoped to the `content` webview and `https://anivox.fun/*`. `toolbar.json` grants local browser/VPN controls only to `toolbar`.
-- `ui/settings.html` and `ui/update-review.html`: local auxiliary windows for MPV settings and release notes. Their close/destroy events must not trigger primary-window hide/exit/VPN cleanup.
+- `ui/settings.html` and `ui/update-review.html`: transparent local child overlay webviews for settings and release notes, managed by `src-tauri/src/local_overlay.rs`. Only one panel opens at a time, anchored to its toolbar button. Close the child webview, NEVER its parent window; keep local origin/label guards and reviewed-version installation. `ui/local-overlay.js` handles positioning, outside click and focus trapping.
 - `ANIVOX-UA-48.conf`: WireGuard configuration embedded at compile time via `include_str!`.
 - `.cargo/config.toml`: selects `rust-lld.exe` for Windows MSVC linking.
 - `run.bat`: adds Bun's user installation to PATH and starts development.

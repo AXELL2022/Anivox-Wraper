@@ -9,10 +9,22 @@ const updater = toolbarRoot.querySelector('#updater');
 const status = toolbarRoot.querySelector('#status');
 const brand = toolbarRoot.querySelector('.brand');
 const settings = toolbarRoot.querySelector('#settings');
+function buttonText(button, selector, text, fallback = text) {
+  const label = button.querySelector?.(selector);
+  if (label) label.textContent = text;
+  else button.textContent = fallback;
+}
+function panelAnchor(button) {
+  const rect = button?.getBoundingClientRect?.();
+  const width = window.innerWidth;
+  return rect && width > 0 ? Math.max(0, Math.min(1, (rect.left + rect.width / 2) / width)) : 0.98;
+}
+settings?.setAttribute('aria-haspopup', 'dialog');
+updater?.setAttribute('aria-haspopup', 'dialog');
 settings?.addEventListener('click', async () => {
   if (settings.disabled) return;
   settings.disabled = true;
-  try { await invoke('open_settings'); }
+  try { await invoke('open_settings', { anchor: panelAnchor(settings) }); }
   catch (err) { message(`Не удалось открыть настройки: ${err}`, true); }
   finally { settings.disabled = false; }
 });
@@ -42,10 +54,17 @@ shikimori.addEventListener('click', async () => {
   }
 });
 
+let messageTimer;
 function message(text, error = false) {
+  clearTimeout(messageTimer);
   status.textContent = text;
   status.title = text;
   status.classList.toggle('error', error);
+  messageTimer = setTimeout(() => {
+    status.textContent = '';
+    status.title = '';
+    status.classList.toggle('error', false);
+  }, 5000);
 }
 
 function renderVpn(active) {
@@ -101,14 +120,14 @@ vpn.addEventListener('click', async () => {
 });
 
 function resetMpv() {
-  mpv.textContent = '▶ MPV';
+  buttonText(mpv, '#mpv-label', 'MPV', '▶ MPV');
   mpv.style.color = '';
   mpv.disabled = false;
 }
 
 mpv.addEventListener('click', async () => {
   mpv.disabled = true;
-  mpv.textContent = 'MPV · …';
+  buttonText(mpv, '#mpv-label', 'MPV · …');
   clearTimeout(mpvTimer);
   mpvTimer = setTimeout(() => {
     resetMpv();
@@ -123,7 +142,7 @@ function showUpdateBadge(version, body) {
   if (updatePending) return;
   const cleanVersion = String(version || '').replace(/^v/, '');
   updater.style.display = 'inline-flex';
-  updater.textContent = `✨ v${cleanVersion}`;
+  buttonText(updater, '#updater-label', `v${cleanVersion}`, `✨ v${cleanVersion}`);
   updater.title = body ? `Доступно обновление v${cleanVersion}\n\n${body}` : `Доступно обновление v${cleanVersion}. Нажмите для установки.`;
 }
 
@@ -134,7 +153,7 @@ if (updater) {
     reviewOpening = true;
     updater.disabled = true;
     try {
-      await invoke('open_update_review');
+      await invoke('open_update_review', { anchor: panelAnchor(updater) });
     } catch (err) {
       message(`Ошибка обновления: ${err}`, true);
     } finally {
@@ -146,9 +165,13 @@ if (updater) {
 }
 
 async function init() {
+  await listen('local-overlay-status', ({ payload }) => {
+    settings?.setAttribute('aria-expanded', String(payload.label === 'settings'));
+    updater?.setAttribute('aria-expanded', String(payload.label === 'update-review'));
+  });
   await listen('update-started', () => {
     updatePending = true;
-    if (updater) { updater.disabled = true; updater.textContent = 'Загрузка… 0%'; }
+    if (updater) { updater.disabled = true; buttonText(updater, '#updater-label', 'Загрузка… 0%'); }
     message('Загрузка обновления…');
   });
   await listen('update-idle', () => {
@@ -162,7 +185,7 @@ async function init() {
   await listen('player-status', ({ payload }) => {
     if (payload.detail) message(payload.detail, true);
     clearTimeout(mpvTimer);
-    mpv.textContent = payload.text;
+    buttonText(mpv, '#mpv-label', String(payload.text).replace(/^[▶✔⚠✨]\s*/u, ''), payload.text);
     mpv.style.color = payload.color;
     mpv.disabled = !payload.resetAfterMs;
     mpvTimer = setTimeout(resetMpv, payload.resetAfterMs || 10000);
@@ -177,14 +200,14 @@ async function init() {
   await listen('update-progress', ({ payload }) => {
     if (updater && updatePending) {
       const percent = payload.percent ?? 0;
-      updater.textContent = `Загрузка… ${percent}%`;
+      buttonText(updater, '#updater-label', `Загрузка… ${percent}%`);
       message(`Загрузка обновления: ${percent}%`);
     }
   });
 
   await listen('update-finished', () => {
     if (updater && updatePending) {
-      updater.textContent = 'Перезапуск…';
+      buttonText(updater, '#updater-label', 'Перезапуск…');
       message('Обновление готово. Перезапуск…');
     }
   });

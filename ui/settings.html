@@ -1,8 +1,9 @@
 <!doctype html>
 <html lang="ru">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Anivox — настройки</title><link rel="stylesheet" href="local-window.css"><script src="settings.js" defer></script></head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Anivox — настройки</title><link rel="stylesheet" href="local-window.css"><script src="local-overlay.js" defer></script><script src="settings.js" defer></script></head>
 <body>
-  <h1>Настройки Anivox</h1>
+ <section id="local-panel" role="dialog" aria-modal="true" aria-labelledby="panel-heading" tabindex="-1">
+  <h1 id="panel-heading">Настройки Anivox</h1>
   <section aria-labelledby="app-heading">
     <h2 id="app-heading">Приложение</h2>
     <form id="session-form">
@@ -25,4 +26,5 @@
   </form>
   <p class="hint">Журналы MPV сохраняются в папку данных Anivox:</p><p id="logs">Загрузка…</p>
   <p id="status" role="status" aria-live="polite"></p>
+ </section>
 </body></html>

@@ -11,4 +11,4 @@ commands.allow = ["get_player_settings", "pick_mpv_executable", "save_player_set
 [[permission]]
 identifier = "allow-close-local-window"
 description = "Close the calling local settings or update window"
-commands.allow = ["close_local_window"]
+commands.allow = ["close_local_window", "local_overlay_ready"]

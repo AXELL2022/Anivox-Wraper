@@ -1,24 +1,31 @@
-:root { color-scheme: dark; font: 14px "Segoe UI", sans-serif; color: #eee9ed; background: #111114; }
+:root { color-scheme: dark; font: 13px "Segoe UI", sans-serif; color: #e8dce5; background: transparent; }
 * { box-sizing: border-box; }
-body { margin: 0; padding: 24px; }
-h1 { margin: 0 0 20px; font-size: 22px; color: #ffa9de; }
-select { width: 100%; padding: 10px; border: 1px solid #51434e; border-radius: 6px; background: #1f1f23; color: inherit; font: inherit; }
-h2 { margin-top: 24px; font-size: 16px; }
-#session-status { min-height: 20px; overflow-wrap: anywhere; }
-p { line-height: 1.5; }
+html, body { width: 100%; height: 100%; overflow: hidden; }
+body { margin: 0; background: transparent; }
+#local-panel { position: absolute; top: 12px; left: 8px; width: min(560px, calc(100% - 16px)); max-height: calc(100% - 24px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #66505e #19171c; padding: 22px; background: #19171c; border: 1px solid #3b323f; border-radius: 10px; box-shadow: 0 12px 36px #0008; }
+#local-panel::before { content: ''; position: fixed; top: 6px; margin-left: calc(var(--arrow-x, 30px) - 28px); width: 12px; height: 12px; transform: rotate(45deg); background: #19171c; border-left: 1px solid #3b323f; border-top: 1px solid #3b323f; pointer-events: none; }
+#local-panel:focus { outline: none; }
+h1 { margin: 0 0 20px; padding-bottom: 16px; border-bottom: 1px solid #302a34; font-size: 18px; font-weight: 600; color: #e8dce5; }
+h2 { margin: 24px 0 14px; font-size: 13px; font-weight: 600; color: #ffb8e2; }
+p { line-height: 1.6; }
 label { display: block; margin-bottom: 8px; font-weight: 600; }
-input { width: 100%; min-width: 0; padding: 10px; border: 1px solid #51434e; border-radius: 6px; background: #1f1f23; color: inherit; font: inherit; }
+input, select { width: 100%; min-width: 0; padding: 9px 11px; border: 1px solid #3b323f; border-radius: 6px; background: #141217; color: inherit; font: inherit; transition: border-color .15s,background .15s; }
+input:hover:not(:disabled), select:hover:not(:disabled) { border-color: #78526c; }
+input:disabled, select:disabled { opacity: .5; }
 .row, .actions { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
 .row input { flex: 1; }
-button { padding: 9px 14px; background: #29242a; color: #ffa9de; border: 1px solid #695061; border-radius: 6px; font: inherit; cursor: pointer; }
-button:hover { background: #40303b; }
-button.primary { background: #ffa9de; color: #231720; font-weight: 700; }
+button { min-height: 32px; padding: 7px 11px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: #211d24; color: #e8dce5; border: 1px solid #3b323f; border-radius: 6px; font: 600 12px/1.3 "Segoe UI",sans-serif; cursor: pointer; transition: background .15s,border-color .15s,color .15s; }
+button:hover:not(:disabled) { background: #302632; border-color: #8c607e; color: #ffc2e6; }
+button:active:not(:disabled) { background: #3b2c3b; }
+button.primary, #save-session { background: #392839; border-color: #a77494; color: #ffb8e2; }
+button.primary:hover:not(:disabled), #save-session:hover:not(:disabled) { background: #493149; border-color: #d49abb; }
 button:disabled { opacity: .5; cursor: wait; }
 :focus-visible { outline: 2px solid #ffa9de; outline-offset: 2px; }
-.hint, #logs { color: #b3a9b0; font-size: 12px; overflow-wrap: anywhere; }
-#status { min-height: 22px; white-space: pre-wrap; overflow-wrap: anywhere; }
-pre { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.55; font: inherit; }
-#notes { max-height: 45vh; overflow-y: auto; padding: 14px; border: 1px solid #40343d; border-radius: 6px; }
-
-.mirror-option { display:flex; align-items:flex-start; gap:8px; margin-top:14px; }
-.mirror-option input { width:auto; flex:none; margin-top:3px; }
+.hint, #logs { color: #b2a6b5; font-size: 12px; overflow-wrap: anywhere; }
+#status, #session-status { min-height: 20px; white-space: pre-wrap; overflow-wrap: anywhere; color: #c9b6c7; font-size: 12px; }
+pre { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; font: inherit; }
+#notes { max-height: 45vh; overflow-y: auto; padding: 14px; border: 1px solid #302a34; border-radius: 6px; background: #141217; }
+.mirror-option { display:flex; align-items:flex-start; gap:8px; margin-top:14px; font-weight:400; line-height:1.5; }
+.mirror-option input { width:16px; height:16px; flex:none; margin:2px 0 0; accent-color:#d99bbf; }
+@media(max-width:480px) { #local-panel { padding:16px; } .actions { gap:6px; } button { padding:7px 9px; } }
+@media(prefers-reduced-motion:reduce) { button,input,select { transition:none; } }

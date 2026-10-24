@@ -8,6 +8,7 @@ use tauri_plugin_dialog::DialogExt;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 
+mod local_overlay;
 mod session;
 mod site_recovery;
 mod tray_settings;
@@ -135,7 +136,8 @@ struct BrowserState {
 #[cfg(target_os = "linux")]
 fn layout_webviews(window: &tauri::Window) -> tauri::Result<()> {
     // The site fills the window; only the native local recovery child needs bounds.
-    site_recovery::layout(window)
+    site_recovery::layout(window)?;
+    local_overlay::layout(window).map_err(|e| tauri::Error::Anyhow(std::io::Error::other(e).into()))
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -168,6 +170,8 @@ fn layout_webviews(window: &tauri::Window) -> tauri::Result<()> {
     }
     site_recovery::layout(window)?;
     layout_shikimori(window, top)?;
+    local_overlay::layout(window)
+        .map_err(|e| tauri::Error::Anyhow(std::io::Error::other(e).into()))?;
     Ok(())
 }
 
@@ -1052,60 +1056,27 @@ fn ensure_local_window(webview: &tauri::Webview, expected: &str) -> Result<(), S
     )
 }
 
-fn open_local_window(
-    app: &tauri::AppHandle,
-    label: &str,
-    page: &str,
-    title: &str,
+#[tauri::command]
+async fn open_settings(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+    anchor: Option<f64>,
 ) -> Result<(), String> {
-    if let Some(window) = app.get_webview_window(label) {
-        // A second click while the page is loading must not reveal about:blank.
-        if !window.is_visible().map_err(|err| err.to_string())? {
-            return Ok(());
-        }
-        window.show().map_err(|err| err.to_string())?;
-        window.unminimize().map_err(|err| err.to_string())?;
-        return window.set_focus().map_err(|err| err.to_string());
-    }
-    let navigation_dev_url = app.config().build.dev_url.clone();
-    let loaded_dev_url = navigation_dev_url.clone();
-    tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App(page.into()))
-        .title(title)
-        .inner_size(560.0, 420.0)
-        .min_inner_size(420.0, 320.0)
-        // New WebView2 controllers initially show about:blank. Reveal the
-        // auxiliary window only after its local document has finished loading.
-        .visible(false)
-        .additional_browser_args(browser_args_for_platform())
-        .on_navigation(move |url| is_local_app_url(url, navigation_dev_url.as_ref()))
-        .on_page_load(move |webview, payload| {
-            if matches!(payload.event(), tauri::webview::PageLoadEvent::Finished)
-                && is_local_app_url(payload.url(), loaded_dev_url.as_ref())
-            {
-                let _ = webview.show();
-                let _ = webview.set_focus();
-            }
-        })
-        .build()
-        .map_err(|err| err.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-async fn open_settings(app: tauri::AppHandle, webview: tauri::Webview) -> Result<(), String> {
     ensure_toolbar_access(&webview)?;
-    open_local_window(&app, "settings", "settings.html", "Anivox — настройки")
+    local_overlay::toggle(&app, "settings", "settings.html", anchor).await
 }
 
 #[tauri::command]
-fn close_local_window(webview: tauri::Webview) -> Result<(), String> {
+async fn close_local_window(webview: tauri::Webview) -> Result<(), String> {
     if !matches!(webview.label(), "settings" | "update-review") {
-        return Err("Недопустимое окно".into());
+        return Err("Недопустимая панель".into());
     }
     ensure_local_window(&webview, webview.label())?;
-    webview.window().destroy().map_err(|err| err.to_string())
+    let app = webview.app_handle();
+    let state = app.state::<local_overlay::OverlayState>();
+    let _guard = state.operation.lock().await;
+    local_overlay::close(app)
 }
-
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PlayerSettingsInfo {
@@ -1885,14 +1856,13 @@ struct UpdateState {
 }
 
 #[tauri::command]
-async fn open_update_review(app: tauri::AppHandle, webview: tauri::Webview) -> Result<(), String> {
+async fn open_update_review(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+    anchor: Option<f64>,
+) -> Result<(), String> {
     ensure_toolbar_access(&webview)?;
-    open_local_window(
-        &app,
-        "update-review",
-        "update-review.html",
-        "Anivox — обновление",
-    )
+    local_overlay::toggle(&app, "update-review", "update-review.html", anchor).await
 }
 
 #[tauri::command]
@@ -2037,6 +2007,7 @@ pub fn run() {
         .manage(MpvState::default())
         .manage(UpdateState::default())
         .manage(site_recovery::SiteLoadState::default())
+        .manage(local_overlay::OverlayState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -2323,6 +2294,7 @@ pub fn run() {
             save_player_settings_command,
             pick_mpv_executable,
             close_local_window,
+            local_overlay::local_overlay_ready,
             check_update,
             open_update_review,
             install_update,
