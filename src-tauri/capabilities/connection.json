@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "connection",
+  "description": "Local connection check panel",
+  "webviews": ["connection"],
+  "permissions": ["allow-close-local-window", "allow-segment-stats-read"]
+}

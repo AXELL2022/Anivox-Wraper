@@ -7,6 +7,46 @@ pub(crate) struct OverlayState {
     pub operation: tokio::sync::Mutex<()>,
     active: Mutex<Option<(String, f64)>>,
 }
+/// Панель настроек создаётся один раз и дальше только скрывается/показывается:
+/// так страница, её скрипт и данные остаются в памяти, а открытие мгновенное.
+/// На Linux webview приклеивается к GTK-контейнеру, поэтому там прежнее поведение.
+fn persistent(label: &str) -> bool {
+    cfg!(not(target_os = "linux")) && label == "settings"
+}
+fn build_view(
+    app: &tauri::AppHandle,
+    window: &tauri::Window,
+    label: &str,
+    page: &str,
+) -> Result<tauri::Webview, String> {
+    let dev = app.config().build.dev_url.clone();
+    window
+        .add_child(
+            tauri::webview::WebviewBuilder::new(label, tauri::WebviewUrl::App(page.into()))
+                .transparent(true)
+                .background_color(tauri::webview::Color(0, 0, 0, 0))
+                .focused(false)
+                .additional_browser_args(crate::browser_args_for_platform())
+                .on_navigation(move |url| crate::is_local_app_url(url, dev.as_ref())),
+            tauri::LogicalPosition::new(0.0, crate::TOOLBAR_HEIGHT),
+            tauri::LogicalSize::new(1.0, 1.0),
+        )
+        .map_err(|e| e.to_string())
+}
+/// Заранее создаёт скрытую панель настроек (вызывается после старта).
+pub(crate) async fn prewarm(app: &tauri::AppHandle) -> Result<(), String> {
+    if !persistent("settings") {
+        return Ok(());
+    }
+    let state = app.state::<OverlayState>();
+    let _guard = state.operation.lock().await;
+    if app.get_webview("settings").is_some() {
+        return Ok(());
+    }
+    let content = app.get_webview("content").ok_or("Окно сайта недоступно")?;
+    let view = build_view(app, &content.window(), "settings", "settings.html")?;
+    view.hide().map_err(|e| e.to_string())
+}
 fn anchor(value: Option<f64>) -> f64 {
     value
         .filter(|n| n.is_finite())
@@ -55,9 +95,13 @@ pub(crate) fn close(app: &tauri::AppHandle) -> Result<(), String> {
         .operation
         .try_lock()
         .map_err(|_| "Дождитесь завершения обновления")?;
-    for label in ["settings", "update-review"] {
+    for label in ["settings", "update-review", "connection"] {
         if let Some(view) = app.get_webview(label) {
-            view.close().map_err(|e| e.to_string())?;
+            if persistent(label) {
+                view.hide().map_err(|e| e.to_string())?;
+            } else {
+                view.close().map_err(|e| e.to_string())?;
+            }
         }
     }
     *app.state::<OverlayState>()
@@ -90,19 +134,11 @@ pub(crate) async fn toggle(
     }
     let content = app.get_webview("content").ok_or("Окно сайта недоступно")?;
     let window = content.window();
-    let dev = app.config().build.dev_url.clone();
-    let view = window
-        .add_child(
-            tauri::webview::WebviewBuilder::new(label, tauri::WebviewUrl::App(page.into()))
-                .transparent(true)
-                .background_color(tauri::webview::Color(0, 0, 0, 0))
-                .focused(false)
-                .additional_browser_args(crate::browser_args_for_platform())
-                .on_navigation(move |url| crate::is_local_app_url(url, dev.as_ref())),
-            tauri::LogicalPosition::new(0.0, crate::TOOLBAR_HEIGHT),
-            tauri::LogicalSize::new(1.0, 1.0),
-        )
-        .map_err(|e| e.to_string())?;
+    let reused = if persistent(label) { app.get_webview(label) } else { None };
+    let view = match reused.clone() {
+        Some(view) => view,
+        None => build_view(app, &window, label, page)?,
+    };
     *state.active.lock().map_err(|e| e.to_string())? = Some((label.into(), anchor(position)));
     #[cfg(target_os = "linux")]
     {
@@ -120,13 +156,18 @@ pub(crate) async fn toggle(
         let _ = close(app);
         return Err(err);
     }
+    if reused.is_some() {
+        // Страница уже загружена: показываем готовую панель и мягко обновляем значения.
+        let _ = view.show();
+        let _ = view.eval("window.__anivoxOverlayShow?.()");
+    }
     report(app, Some(label));
     let _ = view.set_focus();
     Ok(())
 }
 #[tauri::command]
 pub(crate) fn local_overlay_ready(webview: tauri::Webview) -> Result<(), String> {
-    if !matches!(webview.label(), "settings" | "update-review") {
+    if !matches!(webview.label(), "settings" | "update-review" | "connection") {
         return Err("Недопустимая панель".into());
     }
     crate::ensure_local_window(&webview, webview.label())?;

@@ -15,7 +15,7 @@ export async function localWindow(file, invoke) {
   };
   runInNewContext(readFileSync(new URL(file, import.meta.url), 'utf8'), {
     document: { querySelector: element, addEventListener: (name, fn) => keys.set(name, fn) },
-    window: { __TAURI__: { core: { invoke }, event: { listen: async (name, fn) => listeners.set(name, fn) } } },
+    window: { addEventListener: (name, fn) => keys.set('window:' + name, fn), __TAURI__: { core: { invoke }, event: { listen: async (name, fn) => listeners.set(name, fn) } } },
     console,
   });
   await new Promise(resolve => setImmediate(resolve));

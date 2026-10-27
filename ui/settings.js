@@ -77,6 +77,16 @@ async function close() {
 document.querySelector('#close').addEventListener('click', close);
 document.addEventListener('keydown', event => { if (event.key === 'Escape') return close(); });
 perform(async () => { render(await invoke('get_player_settings')); });
+// Панель не пересоздаётся: при повторном показе тихо подтягиваем значения из кеша приложения.
+window.addEventListener('anivox-overlay-show', async () => {
+  if (busy || sessionBusy) return;
+  try {
+    render(await invoke('get_player_settings'));
+    if (sessionLoaded) startup.value = (await invoke('get_session_settings')).startupPage;
+    status.textContent = '';
+    sessionStatus.textContent = '';
+  } catch (_) {}
+});
 
 clearHistory.addEventListener('click', () => perform(async () => {
   await invoke('clear_playback_history');

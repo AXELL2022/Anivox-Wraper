@@ -671,7 +671,7 @@ async fn set_discord_rpc(
     .map_err(|e| e.to_string())?
 }
 
-#[derive(Default, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
 #[serde(default, rename_all = "camelCase")]
 struct PlayerSettings {
     mpv_path: Option<String>,
@@ -679,7 +679,19 @@ struct PlayerSettings {
 }
 
 #[derive(Default)]
-struct PlayerSettingsState(Mutex<()>);
+/// Настройки плеера живут в памяти: диск читается один раз, запись обновляет кеш.
+struct PlayerSettingsState(Mutex<Option<PlayerSettings>>);
+
+fn cached_player_settings(app: &tauri::AppHandle) -> Result<PlayerSettings, String> {
+    let state = app.state::<PlayerSettingsState>();
+    let mut cache = state.0.lock().map_err(|err| err.to_string())?;
+    if let Some(settings) = cache.as_ref() {
+        return Ok(settings.clone());
+    }
+    let settings = load_player_settings(&player_settings_path(app)?)?;
+    *cache = Some(settings.clone());
+    Ok(settings)
+}
 
 fn validate_mpv_path(value: Option<String>) -> Result<Option<String>, String> {
     let value = value.unwrap_or_default().trim().to_owned();
@@ -797,8 +809,66 @@ async fn open_settings(
 }
 
 #[tauri::command]
+async fn open_connection(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+    anchor: Option<f64>,
+) -> Result<(), String> {
+    ensure_toolbar_access(&webview)?;
+    local_overlay::toggle(&app, "connection", "connection.html", anchor).await
+}
+
+#[derive(Default)]
+struct SegmentStatsState(Mutex<Option<SegmentStats>>);
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SegmentStats {
+    host: String,
+    active: bool,
+    inflight: u32,
+    stalled_ms: u64,
+    has_speed: bool,
+    mbps: f64,
+    slow: u32,
+    failed: u32,
+    samples: u32,
+    max_ms: u64,
+    updated_at: f64,
+}
+
+/// Окно сайта присылает сводку скорости загрузки видео-сегментов (.ts и т.п.).
+#[tauri::command]
+fn report_segment_stats(
+    webview: tauri::Webview,
+    state: tauri::State<SegmentStatsState>,
+    mut stats: SegmentStats,
+) -> Result<(), String> {
+    if webview.label() != "content" {
+        return Err("Эта команда доступна только окну сайта".into());
+    }
+    stats.host = stats.host.chars().take(120).collect();
+    for value in [&mut stats.mbps] {
+        if !value.is_finite() || *value < 0.0 {
+            *value = 0.0;
+        }
+    }
+    *state.0.lock().map_err(|e| e.to_string())? = Some(stats);
+    Ok(())
+}
+
+#[tauri::command]
+fn get_segment_stats(
+    webview: tauri::Webview,
+    state: tauri::State<SegmentStatsState>,
+) -> Result<Option<SegmentStats>, String> {
+    ensure_local_window(&webview, "connection")?;
+    Ok(state.0.lock().map_err(|e| e.to_string())?.clone())
+}
+
+#[tauri::command]
 async fn close_local_window(webview: tauri::Webview) -> Result<(), String> {
-    if !matches!(webview.label(), "settings" | "update-review") {
+    if !matches!(webview.label(), "settings" | "update-review" | "connection") {
         return Err("Недопустимая панель".into());
     }
     ensure_local_window(&webview, webview.label())?;
@@ -832,13 +902,7 @@ async fn get_player_settings(
     webview: tauri::Webview,
 ) -> Result<PlayerSettingsInfo, String> {
     ensure_local_window(&webview, "settings")?;
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<PlayerSettingsState>();
-        let _guard = state.0.lock().map_err(|err| err.to_string())?;
-        player_settings_info(&app, load_player_settings(&player_settings_path(&app)?)?)
-    })
-    .await
-    .map_err(|err| err.to_string())?
+    player_settings_info(&app, cached_player_settings(&app)?)
 }
 
 #[tauri::command]
@@ -851,15 +915,18 @@ async fn save_player_settings_command(
     ensure_local_window(&webview, "settings")?;
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<PlayerSettingsState>();
-        let _guard = state.0.lock().map_err(|err| err.to_string())?;
+        let mut cache = state.0.lock().map_err(|err| err.to_string())?;
+        let mirror_embedded = match (mirror_embedded, cache.as_ref()) {
+            (Some(value), _) => value,
+            (None, Some(current)) => current.mirror_embedded,
+            (None, None) => load_player_settings(&player_settings_path(&app)?)?.mirror_embedded,
+        };
         let settings = PlayerSettings {
             mpv_path: validate_mpv_path(mpv_path)?,
-            mirror_embedded: match mirror_embedded {
-                Some(value) => value,
-                None => load_player_settings(&player_settings_path(&app)?)?.mirror_embedded,
-            },
+            mirror_embedded,
         };
         save_player_settings(&player_settings_path(&app)?, &settings)?;
+        *cache = Some(settings.clone());
         player_settings_info(&app, settings)
     })
     .await
@@ -1459,11 +1526,7 @@ async fn open_in_mpv(
     let app_copy = app.clone();
     let (command, session_id, mirror_embedded, ipc_dir, endpoint) =
         tauri::async_runtime::spawn_blocking(move || {
-            let settings = {
-                let state = app_copy.state::<PlayerSettingsState>();
-                let _guard = state.0.lock().map_err(|e| e.to_string())?;
-                load_player_settings(&player_settings_path(&app_copy)?)?
-            };
+            let settings = cached_player_settings(&app_copy)?;
             let settings = PlayerSettings {
                 mpv_path: validate_mpv_path(settings.mpv_path)?,
                 ..settings
@@ -1738,6 +1801,7 @@ pub fn run() {
         .manage(UpdateState::default())
         .manage(site_recovery::SiteLoadState::default())
         .manage(local_overlay::OverlayState::default())
+        .manage(SegmentStatsState::default())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
@@ -1771,7 +1835,7 @@ pub fn run() {
                 let token = format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
                 format!(";if (location.origin === 'https://anivox.fun' && sessionStorage.getItem('anivox-restore-unlocked') !== '{token}') {{ window.__anivoxRestoreToken = '{token}'; {} }}", include_str!("../scripts/restore-paused.js"))
             } else { String::new() };
-            let script_storage = format!("{}\n{}\n{}", restore_guard, SCRIPT, include_str!("../scripts/site-lifecycle.js"));
+            let script_storage = format!("{}\n{}\n{}\n{}", restore_guard, SCRIPT, include_str!("../scripts/site-lifecycle.js"), include_str!("../scripts/segment-monitor.js"));
             let script = script_storage.as_str();
 
             #[cfg(target_os = "linux")]
@@ -1865,6 +1929,11 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 if let Err(err) = site_recovery::create(&recovery_app).await {
                     eprintln!("Не удалось создать экран восстановления: {err}");
+                }
+                // Прогреваем настройки: кеш в памяти и скрытая панель, чтобы открытие было мгновенным.
+                let _ = cached_player_settings(&recovery_app);
+                if let Err(err) = local_overlay::prewarm(&recovery_app).await {
+                    eprintln!("Не удалось подготовить панель настроек: {err}");
                 }
             });
 
@@ -2007,6 +2076,9 @@ pub fn run() {
             get_playback_resume,
             clear_playback_history,
             open_settings,
+            open_connection,
+            report_segment_stats,
+            get_segment_stats,
             get_player_settings,
             save_player_settings_command,
             pick_mpv_executable,

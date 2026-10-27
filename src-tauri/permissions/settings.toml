@@ -12,3 +12,18 @@ commands.allow = ["get_player_settings", "pick_mpv_executable", "save_player_set
 identifier = "allow-close-local-window"
 description = "Close the calling local settings or update window"
 commands.allow = ["close_local_window", "local_overlay_ready"]
+
+[[permission]]
+identifier = "allow-connection-window"
+description = "Open the local connection check panel from the toolbar"
+commands.allow = ["open_connection"]
+
+[[permission]]
+identifier = "allow-segment-stats-report"
+description = "Let the site window report video segment download speed"
+commands.allow = ["report_segment_stats"]
+
+[[permission]]
+identifier = "allow-segment-stats-read"
+description = "Let the local connection panel read video segment download speed"
+commands.allow = ["get_segment_stats"]

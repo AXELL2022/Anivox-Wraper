@@ -15,6 +15,13 @@
     position();
   };
   window.addEventListener('resize', position);
+  // Панель живёт в скрытом webview; при повторном показе только обновляем положение и фокус.
+  window.__anivoxOverlayShow = () => {
+    position();
+    panel.classList.add('ready');
+    panel.focus();
+    window.dispatchEvent(new Event('anivox-overlay-show'));
+  };
   document.addEventListener('click', event => {
     if (event.target === document.body || event.target === document.documentElement) closer?.click();
   });

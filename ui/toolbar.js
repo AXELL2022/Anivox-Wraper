@@ -7,6 +7,7 @@ const updater = toolbarRoot.querySelector('#updater');
 const status = toolbarRoot.querySelector('#status');
 const brand = toolbarRoot.querySelector('.brand');
 const settings = toolbarRoot.querySelector('#settings');
+const connection = toolbarRoot.querySelector('#connection');
 function buttonText(button, selector, text, fallback = text) {
   const label = button.querySelector?.(selector);
   if (label) label.textContent = text;
@@ -25,6 +26,14 @@ settings?.addEventListener('click', async () => {
   try { await invoke('open_settings', { anchor: panelAnchor(settings) }); }
   catch (err) { message(`Не удалось открыть настройки: ${err}`, true); }
   finally { settings.disabled = false; }
+});
+connection?.setAttribute('aria-haspopup', 'dialog');
+connection?.addEventListener('click', async () => {
+  if (connection.disabled) return;
+  connection.disabled = true;
+  try { await invoke('open_connection', { anchor: panelAnchor(connection) }); }
+  catch (err) { message(`Не удалось открыть проверку соединения: ${err}`, true); }
+  finally { connection.disabled = false; }
 });
 let updatePending = false;
 let availableUpdate = null;
@@ -123,6 +132,7 @@ if (updater) {
 async function init() {
   await listen('local-overlay-status', ({ payload }) => {
     settings?.setAttribute('aria-expanded', String(payload.label === 'settings'));
+    connection?.setAttribute('aria-expanded', String(payload.label === 'connection'));
     updater?.setAttribute('aria-expanded', String(payload.label === 'update-review'));
   });
   await listen('update-started', () => {

@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="ru">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Anivox — соединение</title><link rel="stylesheet" href="local-window.css"><script src="local-overlay.js" defer></script><script src="connection.js" defer></script></head>
+<body>
+ <section id="local-panel" role="dialog" aria-modal="true" aria-labelledby="panel-heading" tabindex="-1">
+  <h1 id="panel-heading">Почему тормозит видео?</h1>
+  <ul class="checks" aria-label="Результаты проверки">
+   <li id="check-internet" class="check pending"><span class="dot" aria-hidden="true"></span><span class="check-name">Скорость вашего интернета</span><span class="check-state">Измеряем…</span></li>
+   <li id="check-video" class="check pending"><span class="dot" aria-hidden="true"></span><span class="check-name">Загрузка видео (.ts)</span><span class="check-state">Ожидание…</span></li>
+  </ul>
+  <p id="video-detail" class="hint" hidden></p>
+  <div id="verdict" class="verdict pending" role="status" aria-live="polite">
+   <strong id="verdict-title">Проверяем…</strong>
+   <p id="verdict-text">Это займёт около 10 секунд.</p>
+  </div>
+  <div class="actions"><button id="recheck" class="primary" disabled>Проверить снова</button><button id="close">Закрыть</button></div>
+  <p class="hint">Включите серию и подождите несколько секунд — тогда видно, с какой скоростью приходят куски видео.</p>
+ </section>
+</body></html>
