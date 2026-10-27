@@ -134,7 +134,11 @@ pub(crate) async fn toggle(
     }
     let content = app.get_webview("content").ok_or("Окно сайта недоступно")?;
     let window = content.window();
-    let reused = if persistent(label) { app.get_webview(label) } else { None };
+    let reused = if persistent(label) {
+        app.get_webview(label)
+    } else {
+        None
+    };
     let view = match reused.clone() {
         Some(view) => view,
         None => build_view(app, &window, label, page)?,
