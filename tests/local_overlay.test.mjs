@@ -6,12 +6,12 @@ const source=readFileSync(new URL('../ui/local-overlay.js',import.meta.url),'utf
 function overlay(width=1000){
  const events=new Map(),calls=[]; let closed=0;
  const style={setProperty(k,v){this[k]=v;}};
- const panel={style,focus(){doc.activeElement=this;},querySelectorAll(){return controls;}};
+ const panel={style,classList:{add(){}},focus(){doc.activeElement=this;},querySelectorAll(){return controls;}};
  const controls=[0,1].map(()=>({hidden:false,getClientRects:()=>[{}],focus(){doc.activeElement=this;}}));
  const closer={click(){closed++;}};
  const doc={body:{},documentElement:{},activeElement:null,querySelector:s=>s==='#local-panel'?panel:s==='#close'?closer:{},addEventListener:(n,fn)=>events.set(n,fn)};
  const win={innerWidth:width,addEventListener:(n,fn)=>events.set(n,fn),__TAURI__:{core:{invoke:async c=>calls.push(c)}}};
- runInNewContext(source,{window:win,document:doc,console});
+ runInNewContext(source,{window:win,document:doc,console,requestAnimationFrame:fn=>fn()});
  return {events,calls,win,doc,panel,controls,get closed(){return closed;}};
 }
 test('Local overlay anchors panel and clamps edges on small windows',()=>{

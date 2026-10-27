@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=Anivox
-Comment=Anivox Desktop - Tauri Web Wrapper for anivox.fun with WireGuard VPN
+Comment=Anivox Desktop - Tauri Web Wrapper for anivox.fun
 Exec=anivox
 Icon=anivox
 Terminal=false

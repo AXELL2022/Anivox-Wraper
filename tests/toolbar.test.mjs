@@ -33,20 +33,6 @@ async function toolbar(invoke) {
   return { element, listeners, timers };
 }
 
-test('VPN can connect and retry navigation without any loaded remote document', async () => {
-  let active = false;
-  const actions = [];
-  const { element } = await toolbar(async (command, args) => {
-    if (command === 'get_vpn_status') return active;
-    if (command === 'toggle_vpn') { active = args.enable; return active; }
-    if (command === 'browser_action') actions.push(args.action);
-  });
-  await element('#vpn').handlers.click();
-  assert.equal(element('#vpn').attributes['aria-pressed'], 'true');
-  assert.equal(element('#vpn').disabled, false);
-  assert.deepEqual(actions, ['reload']);
-});
-
 test('Settings opens a local window and recovers after failure', async () => {
   let attempts = 0;
   const { element } = await toolbar(async command => {
@@ -60,24 +46,8 @@ test('Settings opens a local window and recovers after failure', async () => {
   assert.equal(attempts, 2);
 });
 
-test('VPN failure restores the actual state and leaves the control retryable', async () => {
-  let attempts = 0;
-  const { element } = await toolbar(async command => {
-    if (command === 'get_vpn_status') return false;
-    if (command === 'toggle_vpn') { attempts++; throw new Error('access denied'); }
-    throw new Error('Site must not reload after failed VPN connection');
-  });
-  await element('#vpn').handlers.click();
-  assert.equal(element('#vpn').disabled, false);
-  assert.equal(element('#vpn').attributes['aria-pressed'], 'false');
-  assert.match(element('#status').textContent, /access denied/);
-  await element('#vpn').handlers.click();
-  assert.equal(attempts, 2);
-});
-
 test('MPV recovers when the site cannot respond and receives player feedback', async () => {
   const { element, listeners, timers } = await toolbar(async command => {
-    if (command === 'get_vpn_status') return false;
   });
   await element('#mpv').handlers.click();
   assert.equal(element('#mpv').disabled, true);
@@ -131,7 +101,6 @@ test('Toolbar tracks confirmed download progress and restores latest badge on fa
 });
 test('Brand element displays application version from get_app_version', async () => {
   const { element } = await toolbar(async command => {
-    if (command === 'get_vpn_status') return false;
     if (command === 'get_app_version') return 'v0.2.4';
   });
   assert.equal(element('.brand').textContent, 'v0.2.4');
@@ -141,7 +110,6 @@ test('Shikimori toggles its overlay without navigating the main site', async () 
   let visible = false;
   const actions = [];
   const { element } = await toolbar(async (command, args) => {
-    if (command === 'get_vpn_status') return false;
     if (command === 'shikimori_action') {
       if (args.action === 'toggle') { actions.push(args.action); visible = !visible; }
       return visible;
@@ -161,7 +129,6 @@ test('Shikimori toggles its overlay without navigating the main site', async () 
 test('Shikimori can be retried after an opening failure', async () => {
   let attempts = 0;
   const { element } = await toolbar(async (command, args) => {
-    if (command === 'get_vpn_status') return false;
     if (command === 'shikimori_action' && args.action === 'toggle') {
       if (++attempts === 1) throw new Error('Webview failed');
       return true;

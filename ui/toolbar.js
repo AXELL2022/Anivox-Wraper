@@ -1,8 +1,6 @@
 const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 const toolbarRoot = document.querySelector('#anivox-toolbar-host')?.shadowRoot ?? document;
-const vpn = toolbarRoot.querySelector('#vpn');
-const vpnLabel = toolbarRoot.querySelector('#vpn-label');
 const mpv = toolbarRoot.querySelector('#mpv');
 const shikimori = toolbarRoot.querySelector('#shikimori');
 const updater = toolbarRoot.querySelector('#updater');
@@ -28,8 +26,6 @@ settings?.addEventListener('click', async () => {
   catch (err) { message(`Не удалось открыть настройки: ${err}`, true); }
   finally { settings.disabled = false; }
 });
-let vpnActive = false;
-let vpnPending = false;
 let updatePending = false;
 let availableUpdate = null;
 let mpvTimer;
@@ -67,25 +63,6 @@ function message(text, error = false) {
   }, 5000);
 }
 
-function renderVpn(active) {
-  vpnActive = active;
-  vpn.setAttribute('aria-pressed', String(active));
-  vpnLabel.textContent = vpnPending ? 'VPN · …' : `VPN · ${active ? 'ВКЛ' : 'ВЫКЛ'}`;
-  vpn.disabled = vpnPending;
-  vpn.title = vpnPending ? 'Переключение WireGuard…' : `WireGuard: ${active ? 'отключить' : 'подключить'}`;
-}
-
-async function syncVpn() {
-  if (vpnPending) return;
-  try {
-    const active = await invoke('get_vpn_status');
-    if (!vpnPending) renderVpn(active);
-  } catch (err) {
-    message(`Не удалось проверить VPN: ${err}`, true);
-    vpn.disabled = false;
-  }
-}
-
 async function action(action) {
   try {
     await invoke('browser_action', { action });
@@ -96,27 +73,6 @@ async function action(action) {
 
 toolbarRoot.querySelectorAll('[data-action]').forEach(button => {
   button.addEventListener('click', () => action(button.dataset.action));
-});
-
-vpn.addEventListener('click', async () => {
-  if (vpnPending) return;
-  const target = !vpnActive;
-  vpnPending = true;
-  renderVpn(vpnActive);
-  message('Переключение WireGuard…');
-  try {
-    const active = await invoke('toggle_vpn', { enable: target });
-    renderVpn(active);
-    if (active !== target) throw new Error('WireGuard не подтвердил переключение');
-    message(active ? 'VPN подключён. Перезагрузка сайта…' : 'VPN отключён. Перезагрузка сайта…');
-    await action('reload');
-  } catch (err) {
-    message(`Ошибка WireGuard: ${err}`, true);
-  } finally {
-    vpnPending = false;
-    renderVpn(vpnActive);
-    await syncVpn();
-  }
 });
 
 function resetMpv() {
@@ -231,9 +187,6 @@ async function init() {
     } catch (_) {}
   }
   syncVersion();
-
-  await syncVpn();
-  setInterval(syncVpn, 10000);
 }
 
 init().catch(err => message(`Ошибка панели: ${err}`, true));

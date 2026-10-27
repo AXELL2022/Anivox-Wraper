@@ -525,276 +525,6 @@ fn get_app_version(app: tauri::AppHandle) -> String {
 // State to hold the Discord IPC client
 pub struct DiscordState(pub Mutex<Option<DiscordIpcClient>>);
 
-const VPN_CONN_NAME: &str = "ANIVOX-UA-48";
-const VPN_CONFIG: &str = include_str!("../../ANIVOX-UA-48.conf");
-
-fn ensure_config_file() -> Result<std::path::PathBuf, String> {
-    let temp_path = std::env::temp_dir().join("ANIVOX-UA-48.conf");
-    std::fs::write(&temp_path, VPN_CONFIG).map_err(|e| format!("Failed to write config: {}", e))?;
-    Ok(temp_path)
-}
-
-fn is_vpn_active() -> bool {
-    #[cfg(target_os = "linux")]
-    {
-        if std::path::Path::new(&format!("/sys/class/net/{}", VPN_CONN_NAME)).exists() {
-            return true;
-        }
-        if let Ok(output) = Command::new("nmcli")
-            .args(["-t", "-f", "NAME", "connection", "show", "--active"])
-            .output()
-        {
-            if output.status.success() {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                for line in stdout.lines() {
-                    if line.trim() == VPN_CONN_NAME {
-                        return true;
-                    }
-                }
-            }
-        }
-        false
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        use std::os::windows::process::CommandExt;
-        let service_name = format!("WireGuardTunnel${}", VPN_CONN_NAME);
-        let mut cmd = Command::new("sc.exe");
-        cmd.args(["query", &service_name]);
-        cmd.creation_flags(0x08000000);
-        if let Ok(output) = cmd.output() {
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            if stdout.contains("RUNNING") {
-                return true;
-            }
-        }
-        false
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-    {
-        false
-    }
-}
-
-#[cfg(target_os = "windows")]
-fn run_wireguard(argument: &str, value: &str, allow_elevation: bool) -> Result<(), String> {
-    use std::os::windows::process::CommandExt;
-
-    let executable = r"C:\Program Files\WireGuard\wireguard.exe";
-    let executable = if std::path::Path::new(executable).exists() {
-        executable
-    } else {
-        "wireguard.exe"
-    };
-    let output = Command::new(executable)
-        .args([argument, value])
-        .creation_flags(0x08000000)
-        .output()
-        .map_err(|err| format!("Не удалось запустить WireGuard: {err}"))?;
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let error = String::from_utf8_lossy(&output.stderr);
-    let lower = error.to_lowercase();
-    let access_denied = output.status.code() == Some(5)
-        || lower.contains("access is denied")
-        || lower.contains("access denied")
-        || lower.contains("отказано в доступе")
-        || lower.contains("доступ запрещен");
-    if !access_denied || !allow_elevation {
-        return Err(format!("WireGuard: {}", error.trim()));
-    }
-
-    // Only the WireGuard operation is elevated. No remote content runs as administrator.
-    // Escape PowerShell literals; quote the config path separately for Windows argv parsing.
-    let executable = executable.replace('\'', "''");
-    let arguments = format!("{} \"{}\"", argument, value).replace('\'', "''");
-    let script = format!(
-        "$ErrorActionPreference = 'Stop'; try {{ \
-         $p = Start-Process -FilePath '{executable}' -ArgumentList '{arguments}' \
-         -Verb RunAs -Wait -PassThru; exit $p.ExitCode \
-         }} catch {{ \
-         $e = $_.Exception; while ($e.InnerException) {{ $e = $e.InnerException }}; \
-         if ($e.NativeErrorCode -eq 1223) {{ exit 1223 }}; \
-         [Console]::Error.WriteLine($_.Exception.Message); exit 1 }}"
-    );
-    let elevated = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", &script])
-        .creation_flags(0x08000000)
-        .output()
-        .map_err(|err| format!("Не удалось запросить права администратора: {err}"))?;
-    match elevated.status.code() {
-        Some(0) => Ok(()),
-        Some(1223) => Err(
-            "Запрос прав администратора отменён. Для переключения VPN подтвердите запрос Windows."
-                .into(),
-        ),
-        _ => Err(format!(
-            "Не удалось переключить WireGuard с правами администратора (код {:?}). {}",
-            elevated.status.code(),
-            String::from_utf8_lossy(&elevated.stderr).trim()
-        )),
-    }
-}
-
-fn connect_vpn() -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    {
-        if Command::new("nmcli").arg("--version").output().is_ok() {
-            let conn_exists = Command::new("nmcli")
-                .args(["-t", "-f", "NAME", "connection", "show"])
-                .output()
-                .map(|out| {
-                    let stdout = String::from_utf8_lossy(&out.stdout);
-                    stdout.lines().any(|l| l.trim() == VPN_CONN_NAME)
-                })
-                .unwrap_or(false);
-
-            if !conn_exists {
-                let conf_path = ensure_config_file()?;
-                let _ = Command::new("nmcli")
-                    .args(["connection", "import", "type", "wireguard", "file"])
-                    .arg(&conf_path)
-                    .output();
-            }
-
-            let up_res = Command::new("nmcli")
-                .args(["connection", "up", VPN_CONN_NAME])
-                .output()
-                .map_err(|e| format!("Failed to run nmcli up: {}", e))?;
-
-            if !up_res.status.success() {
-                let err = String::from_utf8_lossy(&up_res.stderr);
-                return Err(format!("nmcli up failed: {}", err.trim()));
-            }
-            return Ok(());
-        }
-
-        let conf_path = ensure_config_file()?;
-        let res = Command::new("wg-quick")
-            .arg("up")
-            .arg(&conf_path)
-            .output()
-            .map_err(|e| format!("wg-quick up failed: {}", e))?;
-
-        if !res.status.success() {
-            let err = String::from_utf8_lossy(&res.stderr);
-            return Err(format!("wg-quick up failed: {}", err.trim()));
-        }
-        Ok(())
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        let conf_path = ensure_config_file()?;
-        run_wireguard("/installtunnelservice", &conf_path.to_string_lossy(), true)?;
-
-        // Wait up to 3 seconds for the service to become RUNNING
-        for _ in 0..15 {
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            if is_vpn_active() {
-                return Ok(());
-            }
-        }
-
-        Err("Служба WireGuard не запустилась за отведённое время.".into())
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-    {
-        Err("Unsupported OS for WireGuard VPN".to_string())
-    }
-}
-
-fn disconnect_vpn(_allow_elevation: bool) -> Result<(), String> {
-    #[cfg(target_os = "linux")]
-    {
-        if Command::new("nmcli").arg("--version").output().is_ok() {
-            let down_res = Command::new("nmcli")
-                .args(["connection", "down", VPN_CONN_NAME])
-                .output()
-                .map_err(|e| format!("Failed to run nmcli down: {}", e))?;
-
-            if !down_res.status.success() {
-                let err = String::from_utf8_lossy(&down_res.stderr);
-                return Err(format!("nmcli down failed: {}", err.trim()));
-            }
-            return Ok(());
-        }
-
-        let conf_path = ensure_config_file()?;
-        let res = Command::new("wg-quick")
-            .arg("down")
-            .arg(&conf_path)
-            .output()
-            .map_err(|e| format!("wg-quick down failed: {}", e))?;
-
-        if !res.status.success() {
-            let err = String::from_utf8_lossy(&res.stderr);
-            return Err(format!("wg-quick down failed: {}", err.trim()));
-        }
-        Ok(())
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        run_wireguard("/uninstalltunnelservice", VPN_CONN_NAME, _allow_elevation)?;
-
-        // Wait for service to stop
-        for _ in 0..15 {
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            if !is_vpn_active() {
-                return Ok(());
-            }
-        }
-
-        Err("Служба WireGuard не остановилась за отведённое время.".into())
-    }
-
-    #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-    {
-        Err("Unsupported OS for WireGuard VPN".to_string())
-    }
-}
-
-#[tauri::command]
-async fn get_vpn_status() -> Result<bool, String> {
-    tauri::async_runtime::spawn_blocking(is_vpn_active)
-        .await
-        .map_err(|err| err.to_string())
-}
-
-#[tauri::command]
-async fn toggle_vpn(webview: tauri::Webview, enable: Option<bool>) -> Result<bool, String> {
-    ensure_toolbar_access(&webview)?;
-    tauri::async_runtime::spawn_blocking(move || toggle_vpn_blocking(enable))
-        .await
-        .map_err(|err| err.to_string())?
-}
-
-fn toggle_vpn_blocking(enable: Option<bool>) -> Result<bool, String> {
-    let current = is_vpn_active();
-    let target = match enable {
-        Some(val) => val,
-        None => !current,
-    };
-
-    if target == current {
-        return Ok(current);
-    }
-
-    if target {
-        connect_vpn()?;
-    } else {
-        disconnect_vpn(true)?;
-    }
-
-    Ok(is_vpn_active())
-}
-
 fn ensure_toolbar_access(webview: &tauri::Webview) -> Result<(), String> {
     let expected_label = if cfg!(target_os = "linux") {
         "content"
@@ -1988,7 +1718,7 @@ async fn install_reviewed_update(
 pub fn run() {
     tauri::Builder::default()
         // Register before other plugins and setup so duplicate launches do not
-        // create webviews or run startup side effects (including VPN cleanup).
+        // create webviews or run startup side effects.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_window("main").or_else(|| app.get_window("content")) {
                 let _ = window.show();
@@ -2048,11 +1778,6 @@ pub fn run() {
             let script_storage = add_linux_toolbar_script(script);
             #[cfg(target_os = "linux")]
             let script = script_storage.as_str();
-
-            // Ensure WireGuard VPN is OFF by default on app launch
-            if is_vpn_active() {
-                let _ = disconnect_vpn(false);
-            }
 
             #[cfg(target_os = "windows")]
             std::env::set_var("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", BROWSER_ARGS);
@@ -2208,9 +1933,6 @@ pub fn run() {
                     "quit" => {
                         if let Some(window) = app.get_window("main").or_else(|| app.get_window("content")) { if let Err(err) = session::capture_geometry(&window) { eprintln!("Не удалось запомнить окно: {err}"); } }
                         if let Err(err) = session::flush(app) { eprintln!("Не удалось сохранить сеанс: {err}"); }
-                        if is_vpn_active() {
-                            let _ = disconnect_vpn(false);
-                        }
                         app.exit(0);
                     }
                     _ => {}
@@ -2264,9 +1986,6 @@ pub fn run() {
                 }
             }
             tauri::WindowEvent::Destroyed => {
-                if is_vpn_active() {
-                    let _ = disconnect_vpn(false);
-                }
                 window.app_handle().exit(0);
             }
             _ => {}
@@ -2274,8 +1993,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             set_discord_rpc,
-            get_vpn_status,
-            toggle_vpn,
             browser_action,
             site_recovery::get_site_load_state,
             site_recovery::site_recovery_action,

@@ -13,7 +13,6 @@
     "allow-player-status",
     "allow-site-lifecycle",
     "allow-mpv-commands",
-    "allow-vpn-commands",
     "allow-browser-controls",
     "allow-settings-window",
     "allow-shikimori-controls",

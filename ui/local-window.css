@@ -5,6 +5,7 @@ body { margin: 0; background: transparent; }
 #local-panel { position: absolute; top: 12px; left: 8px; width: min(560px, calc(100% - 16px)); max-height: calc(100% - 24px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: #66505e #19171c; padding: 22px; background: #19171c; border: 1px solid #3b323f; border-radius: 10px; box-shadow: 0 12px 36px #0008; }
 #local-panel::before { content: ''; position: fixed; top: 6px; margin-left: calc(var(--arrow-x, 30px) - 28px); width: 12px; height: 12px; transform: rotate(45deg); background: #19171c; border-left: 1px solid #3b323f; border-top: 1px solid #3b323f; pointer-events: none; }
 #local-panel:focus { outline: none; }
+#local-panel:not(.ready) { visibility: hidden; }
 h1 { margin: 0 0 20px; padding-bottom: 16px; border-bottom: 1px solid #302a34; font-size: 18px; font-weight: 600; color: #e8dce5; }
 h2 { margin: 24px 0 14px; font-size: 13px; font-weight: 600; color: #ffb8e2; }
 p { line-height: 1.6; }

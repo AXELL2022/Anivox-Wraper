@@ -5,7 +5,6 @@
   "webviews": ["toolbar"],
   "permissions": [
     "core:default",
-    "allow-vpn-commands",
     "allow-browser-controls",
     "allow-settings-window",
     "allow-shikimori-controls",

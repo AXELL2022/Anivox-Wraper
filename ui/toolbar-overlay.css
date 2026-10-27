@@ -10,7 +10,6 @@ button.icon { width:28px; padding:0; }
 .toolbar-icon { display:block; width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; pointer-events:none; }
 .divider { flex:none; width:1px; height:18px; background:#3b323f; margin:0 2px; }
 button[aria-pressed="true"], button[aria-expanded="true"] { background:#392839; border-color:#a77494; color:#ffb8e2; }
-#vpn[aria-pressed="true"] .toolbar-icon { color:#91d9b3; }
 #status { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:11px; color:#b2a6b5; }
 #status.error { color:#ff9fab; }
 .updater-btn { display:none; color:#ffb8e2; border-color:#78526c; }
@@ -26,7 +25,6 @@ button[aria-pressed="true"], button[aria-expanded="true"] { background:#392839; 
 @media(max-width:460px) {
  nav { gap:3px; }
  button { padding:0 5px; font-size:10px; }
- #vpn .toolbar-icon { display:none; }
  #status:empty { display:none; }
  #updater { max-width:80px; overflow:hidden; }
  #updater-label { overflow:hidden; text-overflow:ellipsis; }

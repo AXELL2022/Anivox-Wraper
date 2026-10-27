@@ -1,15 +1,14 @@
 # Maintainer: axell
 pkgname=anivox
-pkgver=0.3.3
+pkgver=0.3.4
 pkgrel=1
-pkgdesc="Anivox Desktop - Tauri Web Wrapper for anivox.fun with WireGuard VPN"
+pkgdesc="Anivox Desktop - Tauri Web Wrapper for anivox.fun"
 arch=('x86_64')
 url="https://anivox.fun/"
 license=('unknown')
 depends=('webkit2gtk-4.1' 'gtk3')
 optdepends=(
     'mpv: external player support'
-    'wireguard-tools: WireGuard VPN tunnel support'
 )
 options=('!strip' '!debug')
 

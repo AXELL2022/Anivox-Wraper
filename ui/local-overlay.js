@@ -27,7 +27,10 @@
     else if (!event.shiftKey && (document.activeElement === last || document.activeElement === panel)) { event.preventDefault(); first.focus(); }
   });
   position();
-  window.__TAURI__.core.invoke('local_overlay_ready').then(() => panel.focus()).catch(error => {
+  // Показываем панель только после того, как нативная часть задала размеры и якорь.
+  const reveal = () => requestAnimationFrame(() => requestAnimationFrame(() => { position(); panel.classList.add('ready'); panel.focus(); }));
+  window.__TAURI__.core.invoke('local_overlay_ready').then(reveal).catch(error => {
+    panel.classList.add('ready');
     document.querySelector('#status').textContent = `Не удалось разместить панель: ${error}`;
   });
 })();
