@@ -1,0 +1,18 @@
+#!/bin/sh
+# Перед пушем main или тега v* поднимает локальный self-hosted runner на время сборки.
+# Никогда не блокирует пуш.
+trigger=0
+while read -r local_ref local_sha remote_ref remote_sha; do
+  case "$remote_ref" in
+    refs/heads/main|refs/tags/v*)
+      case "$local_sha" in
+        0000000000000000000000000000000000000000) ;;
+        *) trigger=1 ;;
+      esac
+      ;;
+  esac
+done
+if [ "$trigger" = 1 ]; then
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/runner-on-demand.ps1 >/dev/null 2>&1 || true
+fi
+exit 0

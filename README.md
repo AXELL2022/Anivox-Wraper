@@ -100,4 +100,4 @@ Self-hosted Windows хранит Bun нужной версии и полные C
 - `tests/` — JavaScript и Windows-интеграционные проверки; Rust-тесты расположены рядом с `lib.rs`.
 - `scripts/generate-updater-manifest.mjs` — извлечение changelog и создание манифеста.
 
-Подробности архитектуры — в `INIT.md`, правила разработки — в `AGENTS.md`, история — в `CHANGELOG.md`.
+Архитектура и правила разработки — в `CLAUDE.md`, история — в `CHANGELOG.md`.

@@ -7,4 +7,8 @@ pkg/
 backup_linux/
 *.log
 .superpowers/
+/superpowers/
+/superpowers-local/
+/.agents/
+/.claude/settings.local.json
 /actions-runner/
