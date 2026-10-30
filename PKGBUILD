@@ -1,6 +1,6 @@
 # Maintainer: axell
 pkgname=anivox
-pkgver=0.4.0
+pkgver=0.4.1
 pkgrel=1
 pkgdesc="Anivox Desktop - Tauri Web Wrapper for anivox.fun"
 arch=('x86_64')

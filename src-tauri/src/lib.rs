@@ -340,7 +340,9 @@ async fn show_shikimori(app: &tauri::AppHandle) -> Result<bool, String> {
             .add_child(
                 tauri::webview::WebviewBuilder::new(
                     "shikimori",
-                    tauri::WebviewUrl::External("https://shikimori.io/".parse().unwrap()),
+                    tauri::WebviewUrl::External(shikimori_overlay_url(
+                        &content.url().map_err(|err| err.to_string())?,
+                    )),
                 )
                 .initialization_script(include_str!("../scripts/shikimori.js"))
                 .additional_browser_args(browser_args_for_platform())
@@ -643,6 +645,202 @@ fn update_discord_presence(
     )
 }
 
+const SHIKIMORI_INFO_RETRY: std::time::Duration = std::time::Duration::from_secs(300);
+
+#[derive(Clone, Default)]
+struct ShikimoriData {
+    label: Option<String>,
+    /// Episodes in this season (Shikimori ids are per season); `None` when unknown.
+    episodes: Option<u32>,
+    /// A single-part film: "Серия 1" would only add noise.
+    movie: bool,
+}
+
+enum ShikimoriInfo {
+    Ready(ShikimoriData),
+    Failed(std::time::Instant),
+}
+
+/// Rating line fetched from the public Shikimori API, keyed by anime id.
+#[derive(Default)]
+struct ShikimoriInfoState(Mutex<std::collections::HashMap<u64, ShikimoriInfo>>);
+
+/// Anivox (`/anime/38524-slug`) and Shikimori (`/animes/38524-slug`) share one id.
+fn title_id(url: &tauri::Url, host: &str, section: &str) -> Option<u64> {
+    if url.host_str() != Some(host) {
+        return None;
+    }
+    let mut segments = url.path_segments()?;
+    if segments.next()? != section {
+        return None;
+    }
+    let segment = segments.next()?;
+    let digits = segment.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 || digits > 12 || segment.len() > digits && segment.as_bytes()[digits] != b'-' {
+        return None;
+    }
+    segment[..digits].parse().ok().filter(|id| *id > 0)
+}
+
+fn shikimori_overlay_url(content: &tauri::Url) -> tauri::Url {
+    title_id(content, "anivox.fun", "anime")
+        .and_then(|id| tauri::Url::parse(&format!("https://shikimori.io/animes/{id}")).ok())
+        .unwrap_or_else(|| tauri::Url::parse("https://shikimori.io/").expect("static URL"))
+}
+
+fn presence_title_id(presence: &DiscordPresence) -> Option<u64> {
+    let by_shikimori = presence
+        .shikimori_url
+        .as_deref()
+        .and_then(|url| tauri::Url::parse(url).ok())
+        .and_then(|url| title_id(&url, "shikimori.io", "animes"));
+    // Anivox pages share the Shikimori id, which covers titles without `shikimori_id`.
+    by_shikimori.or_else(|| {
+        let url = tauri::Url::parse(presence.anime_url.as_deref()?).ok()?;
+        title_id(&url, "anivox.fun", "anime")
+    })
+}
+
+fn shikimori_info_label(info: &serde_json::Value) -> Option<String> {
+    let mut parts = Vec::new();
+    let score = info.get("score")?.as_str()?.parse::<f64>().ok()?;
+    if score > 0.0 {
+        parts.push(format!("★ {score:.2}"));
+    }
+    if let Some(kind) = info.get("kind").and_then(|k| k.as_str()) {
+        parts.push(
+            match kind {
+                "tv" => "TV",
+                "movie" => "Фильм",
+                "ova" => "OVA",
+                "ona" => "ONA",
+                "special" | "tv_special" => "Спешл",
+                _ => "",
+            }
+            .to_string(),
+        );
+    }
+    if let Some(year) = info
+        .get("aired_on")
+        .and_then(|d| d.as_str())
+        .and_then(|d| d.get(..4))
+        .filter(|y| y.bytes().all(|c| c.is_ascii_digit()))
+    {
+        parts.push(year.to_string());
+    }
+    parts.retain(|part| !part.is_empty());
+    (!parts.is_empty()).then(|| parts.join(" · "))
+}
+
+fn shikimori_info_episodes(info: &serde_json::Value) -> Option<u32> {
+    info.get("episodes")?
+        .as_u64()
+        .filter(|n| (1..=9999).contains(n))
+        .map(|n| n as u32)
+}
+
+/// "Серия 8 · ..." -> "Серия 8/10 · ..."; other texts and out-of-range numbers are kept.
+fn add_episode_total(state: &str, total: u32) -> String {
+    const PREFIX: &str = "Серия ";
+    let Some(rest) = state.strip_prefix(PREFIX) else {
+        return state.to_string();
+    };
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    let number = rest[..digits].parse::<u32>().ok();
+    if number.is_none_or(|n| n == 0 || n > total) || rest[digits..].starts_with('/') {
+        return state.to_string();
+    }
+    format!("{PREFIX}{}/{total}{}", &rest[..digits], &rest[digits..])
+}
+
+/// "Серия 1 · MPV · Смотрит" -> "MPV · Смотрит"; texts without an episode are kept.
+fn strip_episode(state: &str) -> String {
+    let Some(rest) = state.strip_prefix("Серия ") else {
+        return state.to_string();
+    };
+    let digits = rest.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 {
+        return state.to_string();
+    }
+    let rest = &rest[digits..];
+    rest.strip_prefix(" · ").unwrap_or(rest).to_string()
+}
+
+async fn fetch_shikimori_data(id: u64) -> Result<ShikimoriData, String> {
+    // reqwest is built without a bundled TLS provider (shared with the updater).
+    // An error only means a provider is already installed.
+    let _ = rustls::crypto::ring::default_provider().install_default();
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("Anivox/", env!("CARGO_PKG_VERSION")))
+        .timeout(std::time::Duration::from_secs(4))
+        .build()
+        .map_err(|e| e.to_string())?;
+    let info: serde_json::Value = client
+        .get(format!("https://shikimori.io/api/animes/{id}"))
+        .send()
+        .await
+        .and_then(|response| response.error_for_status())
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(ShikimoriData {
+        label: shikimori_info_label(&info),
+        episodes: shikimori_info_episodes(&info),
+        movie: info.get("kind").and_then(|k| k.as_str()) == Some("movie"),
+    })
+}
+
+/// Fills the cache for a title; failures are remembered so the API is not hammered.
+async fn ensure_shikimori_info(app: &tauri::AppHandle, id: u64) {
+    {
+        let cache = app.state::<ShikimoriInfoState>();
+        let Ok(cache) = cache.0.lock() else { return };
+        match cache.get(&id) {
+            Some(ShikimoriInfo::Ready(_)) => return,
+            Some(ShikimoriInfo::Failed(at)) if at.elapsed() < SHIKIMORI_INFO_RETRY => return,
+            _ => {}
+        }
+    }
+    let entry = match fetch_shikimori_data(id).await {
+        Ok(data) => ShikimoriInfo::Ready(data),
+        Err(_) => ShikimoriInfo::Failed(std::time::Instant::now()),
+    };
+    if let Ok(mut cache) = app.state::<ShikimoriInfoState>().0.lock() {
+        if cache.len() >= 200 {
+            cache.clear();
+        }
+        cache.insert(id, entry);
+    }
+}
+
+/// Puts the cached Shikimori line before the status ("★ 9.05 · TV · 2019 · Серия 5 · ...").
+fn decorate_presence(app: &tauri::AppHandle, presence: &mut DiscordPresence) {
+    let Some(id) = presence_title_id(presence) else {
+        return;
+    };
+    let data = match app.state::<ShikimoriInfoState>().0.lock() {
+        Ok(cache) => match cache.get(&id) {
+            Some(ShikimoriInfo::Ready(data)) => data.clone(),
+            _ => return,
+        },
+        Err(_) => return,
+    };
+    let mut text = match data.episodes {
+        _ if data.movie => strip_episode(&presence.state_text),
+        Some(total) => add_episode_total(&presence.state_text, total),
+        None => presence.state_text.clone(),
+    };
+    if let Some(label) = data.label {
+        text = if text.is_empty() {
+            label
+        } else {
+            format!("{label} · {text}")
+        };
+    }
+    presence.state_text = text.chars().take(128).collect();
+}
+
 #[tauri::command]
 async fn set_discord_rpc(
     app: tauri::AppHandle,
@@ -650,6 +848,9 @@ async fn set_discord_rpc(
 ) -> Result<(), String> {
     presence.details = presence.details.chars().take(128).collect();
     presence.state_text = presence.state_text.chars().take(128).collect();
+    if let Some(id) = presence_title_id(&presence) {
+        ensure_shikimori_info(&app, id).await;
+    }
     // Discord's handshake performs blocking pipe/socket I/O without a timeout.
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<DiscordState>();
@@ -665,6 +866,8 @@ async fn set_discord_rpc(
         {
             return Ok(());
         }
+        let mut presence = presence;
+        decorate_presence(&app, &mut presence);
         update_discord_presence(&mut client, &presence)
     })
     .await
@@ -1375,6 +1578,8 @@ fn refresh_mpv_discord(app: &tauri::AppHandle) {
                 .filter(|s| s.playback.ready)
                 .map(mpv_presence)
                 .unwrap_or_else(|| state.embedded.lock().map(|p| p.clone()).unwrap_or_default());
+            let mut presence = presence;
+            decorate_presence(&app, &mut presence);
             let _ = update_discord_presence(&mut client, &presence);
         }
         state.rpc_pending.store(false, Ordering::Release);
@@ -1628,7 +1833,18 @@ async fn open_in_mpv(
             }
         }
     }
+    let title = sample
+        .media
+        .as_ref()
+        .and_then(|m| presence_title_id(&m.presence));
     *state.current.lock().map_err(|e| e.to_string())? = Some(sample.clone());
+    if let Some(id) = title {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            ensure_shikimori_info(&app, id).await;
+            refresh_mpv_discord(&app);
+        });
+    }
     tauri::async_runtime::spawn(track_mpv(app.clone(), child, stream, sample, ipc_dir));
     Ok(MpvLaunchInfo {
         session_id,
@@ -1795,6 +2011,7 @@ pub fn run() {
         })
         .manage(DiscordState(Mutex::new(None)))
         .manage(ShikimoriState::default())
+        .manage(ShikimoriInfoState::default())
         .manage(PlayerSettingsState::default())
         .manage(TrayState::default())
         .manage(MpvState::default())
