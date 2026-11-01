@@ -1,6 +1,9 @@
 use super::*;
+use crate::mpv::*;
+use crate::player_settings::*;
 use crate::updater::changed_update_review;
 use std::path::PathBuf;
+use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct TempDir(PathBuf);

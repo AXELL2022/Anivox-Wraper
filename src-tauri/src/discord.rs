@@ -314,7 +314,7 @@ pub async fn set_discord_rpc(
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<DiscordState>();
         let mut client = state.inner().0.lock().map_err(|e| e.to_string())?;
-        let mpv = app.state::<crate::MpvState>();
+        let mpv = app.state::<crate::mpv::MpvState>();
         *mpv.embedded.lock().map_err(|e| e.to_string())? = presence.clone();
         if mpv
             .current

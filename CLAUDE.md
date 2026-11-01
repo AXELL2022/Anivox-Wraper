@@ -8,9 +8,9 @@ Anivox is a Tauri v2 desktop wrapper for `https://anivox.fun/`, with a Rust back
 
 ## Source map
 
-- `src-tauri/src/lib.rs`: application setup, native window with separate `toolbar` and `content` webviews, Discord state, MPV launch, IPC commands and initialization script assembly via `concat!` and `include_str!`.
+- `src-tauri/src/lib.rs`: application setup, native window with separate `toolbar` and `content` webviews, window/Shikimori overlay IPC commands and initialization script assembly via `concat!` and `include_str!`.
 - `src-tauri/src/main.rs`: minimal entry point calling `anivox_lib::run()`; preserves the Windows release console suppression attribute.
-- `src-tauri/src/` modules: `session.rs` (window geometry and last-page persistence; read its module doc for the required call order around window creation, tray hiding and exit), `site_recovery.rs` (native loading watchdog; a timeout is not proof of network failure), `tray_settings.rs` (close-to-tray state), `local_overlay.rs` (local dropdown panels). Rust tests live in `*_tests.rs` files next to `lib.rs` and in inline `#[cfg(test)]` modules.
+- `src-tauri/src/` modules: `discord.rs` (Rich Presence and the Shikimori rating line), `mpv.rs` (MPV launch, IPC tracking and playback history), `player_settings.rs` (`settings.json` and the settings commands), `updater.rs` (update check/install commands), `session.rs` (window geometry and last-page persistence; read its module doc for the required call order around window creation, tray hiding and exit), `site_recovery.rs` (native loading watchdog; a timeout is not proof of network failure), `tray_settings.rs` (close-to-tray state), `local_overlay.rs` (local dropdown panels). Rust tests live in `*_tests.rs` files next to `lib.rs` and in inline `#[cfg(test)]` modules.
 - `src-tauri/scripts/`: remote webview injection scripts: `inject-common.js` (MPV media hooks, fullscreen, Discord), `inject-windows.js` (RTX VSR DirectComposition CSS), `inject-linux.js` (WebKitGTK buffer/pacer workarounds), `mpv-session.js` (same-episode embedded mirroring driven by native MPV snapshots; loaded before `inject-common.js` on all platforms), `restore-paused.js`, `site-lifecycle.js`, `segment-monitor.js`, and `shikimori.js` (Shikimori webview only).
 - `ui/`: bundled local toolbar HTML/CSS/JS, local panels (`settings`, `update-review`, `connection`), Shikimori overlay controls and the site recovery screen. Windows uses an independent toolbar (`index.html`); Linux injects `toolbar-fragment.html` into the remote page.
 - `src-tauri/Cargo.toml`: Rust 2021 crate and dependencies; library name is `anivox_lib`.
@@ -55,7 +55,7 @@ The taskbar script launches a test instance and checks that both `ICON_SMALL` an
 
 ## Implementation conventions
 
-- Keep backend application logic in `lib.rs` and the entry point minimal.
+- Keep `main.rs` minimal; `lib.rs` wires modules together, so put new feature logic in its own module under `src-tauri/src/` (commands are `pub`, shared items `pub(crate)`).
 - Change `ui/` for toolbar design and controls; change `src-tauri/scripts/inject-common.js` for cross-platform remote hooks, `inject-windows.js` for Windows/VSR DirectComposition styles, and `inject-linux.js` for WebKitGTK-specific engine/buffer optimizations.
 - **Toolbar markup is duplicated:** add or change a button in both `ui/index.html` (Windows) and `ui/toolbar-fragment.html` (Linux). Toolbar changes must work in both modes.
 - Register new IPC commands in `tauri::generate_handler!`, define their permissions under `src-tauri/permissions/`, and enable them in the right capability file. Keep remote access scoped to the intended origin.
@@ -94,7 +94,7 @@ The tag `vX.Y.Z` takes its notes from the `## [X.Y.Z]` section of `CHANGELOG.md`
 
 Tauri v2, Rust 2021, Windows/WebView2 и Linux/WebKitGTK 4.1. Идентификатор приложения — `com.yasin.anivox`. Целевой сайт — `https://anivox.fun/`. Пакетный менеджер JavaScript — Bun. Команды сборки и тестов — выше и в README.
 
-`src-tauri/src/main.rs` вызывает `anivox_lib::run()` и сохраняет подавление консоли Windows release. Backend остаётся в `src-tauri/src/lib.rs`; `frontendDist` в `tauri.conf.json` указывает на `../ui`.
+`src-tauri/src/main.rs` вызывает `anivox_lib::run()` и сохраняет подавление консоли Windows release. Backend разложен по модулям `src-tauri/src/` (`lib.rs` собирает приложение); `frontendDist` в `tauri.conf.json` указывает на `../ui`.
 
 ### Окна и внедряемый код
 
