@@ -90,7 +90,7 @@ fn report(app: &tauri::AppHandle, label: Option<&str>) {
 }
 pub(crate) fn close(app: &tauri::AppHandle) -> Result<(), String> {
     // Keep review/progress attached while the installer owns its operation.
-    let update = app.state::<crate::UpdateState>();
+    let update = app.state::<crate::updater::UpdateState>();
     let _guard = update
         .operation
         .try_lock()

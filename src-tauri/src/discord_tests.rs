@@ -61,12 +61,12 @@ fn healthy_connection_is_reused() {
 #[test]
 fn install_outcomes_match_toolbar_protocol() {
     assert_eq!(
-        serde_json::to_value(super::UpdateInstallOutcome::NoUpdate).unwrap(),
+        serde_json::to_value(crate::updater::UpdateInstallOutcome::NoUpdate).unwrap(),
         "no_update"
     );
     #[cfg(target_os = "linux")]
     assert_eq!(
-        serde_json::to_value(super::UpdateInstallOutcome::ReleasePage).unwrap(),
+        serde_json::to_value(crate::updater::UpdateInstallOutcome::ReleasePage).unwrap(),
         "release_page"
     );
 }
