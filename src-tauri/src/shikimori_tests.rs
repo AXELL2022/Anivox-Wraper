@@ -1,6 +1,6 @@
-use super::{
-    add_episode_total, shikimori_info_episodes, shikimori_info_label, shikimori_navigation_allowed,
-    shikimori_new_window_response, shikimori_overlay_url, strip_episode,
+use super::{shikimori_navigation_allowed, shikimori_new_window_response, shikimori_overlay_url};
+use crate::discord::{
+    add_episode_total, shikimori_info_episodes, shikimori_info_label, strip_episode,
 };
 use tauri::webview::NewWindowResponse;
 
@@ -83,7 +83,7 @@ fn info_label_shows_score_kind_and_year() {
 #[tokio::test]
 #[ignore = "requires network access to shikimori.io"]
 async fn live_api_returns_info_label() {
-    let data = super::fetch_shikimori_data(38524).await.unwrap();
+    let data = crate::discord::fetch_shikimori_data(38524).await.unwrap();
     assert_eq!(data.label.as_deref(), Some("★ 9.05 · TV · 2019"));
     assert_eq!(data.episodes, Some(10));
 }

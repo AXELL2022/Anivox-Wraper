@@ -1,4 +1,4 @@
-use super::send_discord_activity;
+use crate::discord::send_discord_activity;
 
 #[test]
 fn connects_when_discord_becomes_available() {
@@ -78,7 +78,7 @@ fn rich_presence_contains_cover_buttons_and_remaining_timer() {
         .unwrap()
         .as_secs() as i64
         + 120;
-    let presence = super::DiscordPresence {
+    let presence = crate::discord::DiscordPresence {
         details: "Anime".into(),
         state_text: "Серия 5 · Сезон 2".into(),
         poster_url: Some("https://cdn.example/cover.jpg".into()),
@@ -86,7 +86,7 @@ fn rich_presence_contains_cover_buttons_and_remaining_timer() {
         shikimori_url: Some("https://shikimori.io/animes/123".into()),
         end_timestamp: Some(end),
     };
-    let json = serde_json::to_value(super::build_discord_activity(&presence)).unwrap();
+    let json = serde_json::to_value(crate::discord::build_discord_activity(&presence)).unwrap();
     assert_eq!(json["type"], 3);
     assert_eq!(json["details"], "Anime");
     assert_eq!(
@@ -100,8 +100,8 @@ fn rich_presence_contains_cover_buttons_and_remaining_timer() {
 
 #[test]
 fn minimal_presence_omits_timer_buttons_and_falls_back_to_logo() {
-    let presence = super::DiscordPresence::default();
-    let json = serde_json::to_value(super::build_discord_activity(&presence)).unwrap();
+    let presence = crate::discord::DiscordPresence::default();
+    let json = serde_json::to_value(crate::discord::build_discord_activity(&presence)).unwrap();
     assert_eq!(json["assets"]["large_image"], "logo");
     assert!(json.get("timestamps").is_none());
     assert!(json.get("buttons").is_none());
@@ -109,14 +109,14 @@ fn minimal_presence_omits_timer_buttons_and_falls_back_to_logo() {
 
 #[test]
 fn invalid_links_and_timestamps_are_not_sent_to_discord() {
-    let presence = super::DiscordPresence {
+    let presence = crate::discord::DiscordPresence {
         poster_url: Some("file:///private/cover.jpg".into()),
         anime_url: Some("https://anivox.fun.evil.example/anime/1".into()),
         shikimori_url: Some("https://user:secret@shikimori.io/animes/1".into()),
         end_timestamp: Some(i64::MAX),
         ..Default::default()
     };
-    let json = serde_json::to_value(super::build_discord_activity(&presence)).unwrap();
+    let json = serde_json::to_value(crate::discord::build_discord_activity(&presence)).unwrap();
     assert_eq!(json["assets"]["large_image"], "logo");
     assert!(json.get("timestamps").is_none());
     assert!(json.get("buttons").is_none());
