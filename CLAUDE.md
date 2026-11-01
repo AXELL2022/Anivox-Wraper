@@ -57,7 +57,7 @@ The taskbar script launches a test instance and checks that both `ICON_SMALL` an
 
 - Keep `main.rs` minimal; `lib.rs` wires modules together, so put new feature logic in its own module under `src-tauri/src/` (commands are `pub`, shared items `pub(crate)`).
 - Change `ui/` for toolbar design and controls; change `src-tauri/scripts/inject-common.js` for cross-platform MPV/Discord hooks, `player-fullscreen.js` for fullscreen behaviour, `common-styles.js` for shared CSS, `inject-windows.js` for Windows/VSR DirectComposition styles, and `inject-linux.js` for WebKitGTK-specific engine/buffer optimizations.
-- **Toolbar markup is duplicated:** add or change a button in both `ui/index.html` (Windows) and `ui/toolbar-fragment.html` (Linux). Toolbar changes must work in both modes.
+- **Toolbar markup is duplicated:** add or change a button in both `ui/index.html` (Windows) and `ui/toolbar-fragment.html` (Linux). Toolbar changes must work in both modes. `tests/toolbar_parity.test.mjs` fails when the two `<nav>` blocks differ.
 - Register new IPC commands in `tauri::generate_handler!`, define their permissions under `src-tauri/permissions/`, and enable them in the right capability file. Keep remote access scoped to the intended origin.
 - Retain platform-specific `#[cfg(target_os = ...)]` branches when changing process execution.
 - Shikimori has no Anivox/MPV access: its origin-scoped capability only permits closing its own overlay on Escape. Navigation controls belong to the local overlay and application toolbar. Keep Shikimori's HTTPS navigation and engine-managed login popups enabled for social sign-in; external login providers receive no IPC permissions, so do not broaden the origin-scoped capability to enable OAuth.
