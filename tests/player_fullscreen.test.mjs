@@ -3,8 +3,9 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
 
-const source = readFileSync(new URL('../src-tauri/scripts/inject-common.js', import.meta.url), 'utf8');
-const fullscreenScript = source.slice(source.indexOf('    function isPlayerControl('), source.indexOf('    function setupCommonStyles('));
+const source = readFileSync(new URL('../src-tauri/scripts/player-fullscreen.js', import.meta.url), 'utf8');
+// Skip the origin guard and the fullscreenchange sync; run only the double-click handlers.
+const fullscreenScript = source.slice(source.indexOf('    function isPlayerControl('), source.lastIndexOf('})();'));
 
 // Run the production fullscreen handlers against a simulated DOM and clock.
 function createMockEnvironment({ isFullscreen = false, isPlaying = true } = {}) {

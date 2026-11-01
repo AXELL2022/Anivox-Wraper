@@ -713,7 +713,11 @@ pub fn run() {
                 "\n",
                 include_str!("../scripts/mpv-session.js"),
                 "\n",
-                include_str!("../scripts/inject-common.js")
+                include_str!("../scripts/inject-common.js"),
+                "\n",
+                include_str!("../scripts/player-fullscreen.js"),
+                "\n",
+                include_str!("../scripts/common-styles.js")
             );
 
             #[cfg(target_os = "linux")]
@@ -722,11 +726,23 @@ pub fn run() {
                 "\n",
                 include_str!("../scripts/mpv-session.js"),
                 "\n",
-                include_str!("../scripts/inject-common.js")
+                include_str!("../scripts/inject-common.js"),
+                "\n",
+                include_str!("../scripts/player-fullscreen.js"),
+                "\n",
+                include_str!("../scripts/common-styles.js")
             );
 
             #[cfg(not(any(target_os = "windows", target_os = "linux")))]
-            const SCRIPT: &str = concat!(include_str!("../scripts/mpv-session.js"), "\n", include_str!("../scripts/inject-common.js"));
+            const SCRIPT: &str = concat!(
+                include_str!("../scripts/mpv-session.js"),
+                "\n",
+                include_str!("../scripts/inject-common.js"),
+                "\n",
+                include_str!("../scripts/player-fullscreen.js"),
+                "\n",
+                include_str!("../scripts/common-styles.js")
+            );
 
             let restore_guard = if startup_url.as_str() != session::HOME_URL {
                 let token = format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
