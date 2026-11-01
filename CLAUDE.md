@@ -42,7 +42,7 @@ node --test tests/settings.test.mjs                                 # one test f
 node --test --test-name-pattern="Escape" tests/settings.test.mjs   # one test by name
 ```
 
-`package.json` defines `dev`, `build`, `build:arch`, `install:arch`, and `tauri`. Builds produce host-platform Tauri bundles and require the platform's Tauri/Rust prerequisites. Windows linking requires the configured `rust-lld.exe`.
+`package.json` defines `dev`, `build`, `build:arch`, `install:arch`, and `tauri`. Windows builds produce only the NSIS `setup.exe` and MSI (`bundle.targets` in `tauri.conf.json`); on Linux `build:arch` runs `tauri build --no-bundle` and packs the binary into `.pkg.tar.zst` via `PKGBUILD` (no AppImage/deb/rpm, no portable exe). Builds require the platform's Tauri/Rust prerequisites. Windows linking requires the configured `rust-lld.exe`.
 
 Windows integration checks run against a release build, with other Anivox instances closed:
 

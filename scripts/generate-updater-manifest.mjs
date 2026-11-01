@@ -75,11 +75,7 @@ export function generateManifest({
         url: downloadUrl,
       };
       console.log(`Configured windows-x86_64 updater asset: ${targetBaseName}`);
-    } else if (
-      baseName.includes('AppImage.tar.gz.sig') ||
-      baseName.includes('AppImage.sig') ||
-      baseName.includes('linux')
-    ) {
+    } else if (baseName.endsWith('.pkg.tar.zst.sig')) {
       platforms['linux-x86_64'] = {
         signature,
         url: downloadUrl,

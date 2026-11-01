@@ -14,15 +14,15 @@ test('generateManifest correctly creates latest.json with signatures and asset u
   fs.writeFileSync(notesPath, notes);
 
   const winSubDir = path.join(inputDir, 'anivox-windows');
-  const linuxSubDir = path.join(inputDir, 'anivox-linux');
+  const linuxSubDir = path.join(inputDir, 'anivox-arch');
   fs.mkdirSync(winSubDir, { recursive: true });
   fs.mkdirSync(linuxSubDir, { recursive: true });
 
   fs.writeFileSync(path.join(winSubDir, 'Anivox_0.2.4_x64-setup.exe'), 'mock binary');
   fs.writeFileSync(path.join(winSubDir, 'Anivox_0.2.4_x64-setup.exe.sig'), 'mock-windows-sig\n');
 
-  fs.writeFileSync(path.join(linuxSubDir, 'Anivox_0.2.4_amd64.AppImage.tar.gz'), 'mock tar');
-  fs.writeFileSync(path.join(linuxSubDir, 'Anivox_0.2.4_amd64.AppImage.tar.gz.sig'), 'mock-linux-sig\n');
+  fs.writeFileSync(path.join(linuxSubDir, 'anivox-0.2.4-1-x86_64.pkg.tar.zst'), 'mock package');
+  fs.writeFileSync(path.join(linuxSubDir, 'anivox-0.2.4-1-x86_64.pkg.tar.zst.sig'), 'mock-linux-sig\n');
 
   const manifest = generateManifest({
     inputDir,
@@ -43,7 +43,7 @@ test('generateManifest correctly creates latest.json with signatures and asset u
   assert.equal(manifest.platforms['linux-x86_64'].signature, 'mock-linux-sig');
   assert.equal(
     manifest.platforms['linux-x86_64'].url,
-    'https://github.com/AXELL2022/Anivox-Wraper/releases/download/v0.2.4/Anivox_0.2.4_amd64.AppImage.tar.gz'
+    'https://github.com/AXELL2022/Anivox-Wraper/releases/download/v0.2.4/anivox-0.2.4-1-x86_64.pkg.tar.zst'
   );
 
   const saved = JSON.parse(fs.readFileSync(path.join(outputDir, 'latest.json'), 'utf8'));
