@@ -86,7 +86,7 @@ The taskbar script launches a test instance and checks that both `ICON_SMALL` an
 
 ## Release
 
-The tag `vX.Y.Z` takes its notes from the `## [X.Y.Z]` section of `CHANGELOG.md` via `scripts/generate-updater-manifest.mjs`. A missing or empty section stops the release. Keep `package.json`, `PKGBUILD`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, `src-tauri/tauri.conf.json` and the version label in `ui/index.html` / `ui/toolbar-fragment.html` in sync. The Windows CI job runs on a self-hosted runner (`actions-runner/` is git-ignored) and builds a separate `com.yasin.anivox.ci-native` identifier for native tests.
+The tag `vX.Y.Z` takes its notes from the `## [X.Y.Z]` section of `CHANGELOG.md` via `scripts/generate-updater-manifest.mjs`. A missing or empty section stops the release. Keep `package.json`, `PKGBUILD`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, `src-tauri/tauri.conf.json` and the version label in `ui/index.html` / `ui/toolbar-fragment.html` in sync. `tests/version_sync.test.mjs` fails when they diverge. The Windows CI job runs on a self-hosted runner (`actions-runner/` is git-ignored) and builds a separate `com.yasin.anivox.ci-native` identifier for native tests.
 
 ## Архитектура
 
