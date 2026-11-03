@@ -52,6 +52,37 @@ test('generateManifest correctly creates latest.json with signatures and asset u
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
+test('generateManifest adds a darwin entry per architecture', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'manifest-mac-'));
+  try {
+    const notesPath = path.join(tmpDir, 'release-notes.md');
+    fs.writeFileSync(notesPath, '## [0.4.3]\n* Mac\n');
+    for (const arch of ['aarch64', 'x64']) {
+      const dir = path.join(tmpDir, 'input', `anivox-macos-${arch}`);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `Anivox_0.4.3_${arch}.app.tar.gz`), 'archive');
+      fs.writeFileSync(path.join(dir, `Anivox_0.4.3_${arch}.app.tar.gz.sig`), `sig-${arch}\n`);
+      fs.writeFileSync(path.join(dir, `Anivox_0.4.3_${arch}.dmg`), 'dmg');
+    }
+    const manifest = generateManifest({
+      inputDir: path.join(tmpDir, 'input'),
+      outputDir: path.join(tmpDir, 'output'),
+      tag: 'v0.4.3',
+      repo: 'AXELL2022/Anivox-Wraper',
+      notesPath,
+    });
+    assert.deepEqual(manifest.platforms['darwin-aarch64'], {
+      signature: 'sig-aarch64',
+      url: 'https://github.com/AXELL2022/Anivox-Wraper/releases/download/v0.4.3/Anivox_0.4.3_aarch64.app.tar.gz',
+    });
+    assert.deepEqual(manifest.platforms['darwin-x86_64'], {
+      signature: 'sig-x64',
+      url: 'https://github.com/AXELL2022/Anivox-Wraper/releases/download/v0.4.3/Anivox_0.4.3_x64.app.tar.gz',
+    });
+    assert.equal(manifest.platforms['windows-x86_64'], undefined);
+  } finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+});
+
 test('Release notes select exact version and normalize CRLF without adjacent releases', () => {
   const changelog = '# History\r\n## [0.2.40] — Other\r\nWrong\r\n## [0.2.4] — Changes\r\n* Реальные изменения\r\n\r\n---\r\n\r\n## [0.2.3]\r\nOld\r\n';
   assert.equal(extractReleaseNotes(changelog, 'v0.2.4'), '## [0.2.4] — Changes\n* Реальные изменения');

@@ -75,6 +75,12 @@ export function generateManifest({
         url: downloadUrl,
       };
       console.log(`Configured windows-x86_64 updater asset: ${targetBaseName}`);
+    } else if (baseName.endsWith('_aarch64.app.tar.gz.sig')) {
+      platforms['darwin-aarch64'] = { signature, url: downloadUrl };
+      console.log(`Configured darwin-aarch64 updater asset: ${targetBaseName}`);
+    } else if (baseName.endsWith('_x64.app.tar.gz.sig')) {
+      platforms['darwin-x86_64'] = { signature, url: downloadUrl };
+      console.log(`Configured darwin-x86_64 updater asset: ${targetBaseName}`);
     } else if (baseName.endsWith('.pkg.tar.zst.sig')) {
       platforms['linux-x86_64'] = {
         signature,
