@@ -1,8 +1,12 @@
+// The macOS binary has a separate minimal entry point (macos.rs).
+#![cfg(not(target_os = "macos"))]
+
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
 
 mod discord;
+mod discord_presence;
 mod local_overlay;
 mod mpv;
 mod player_settings;
