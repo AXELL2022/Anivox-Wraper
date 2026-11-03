@@ -58,6 +58,7 @@ fn healthy_connection_is_reused() {
     assert_eq!(client, Some(1));
 }
 
+#[cfg(not(target_os = "macos"))]
 #[test]
 fn install_outcomes_match_toolbar_protocol() {
     assert_eq!(

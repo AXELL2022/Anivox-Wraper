@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "macos-discord",
+  "description": "Only Discord presence updates from the macOS Anivox webview",
+  "platforms": ["macOS"],
+  "local": false,
+  "webviews": ["macos-main"],
+  "remote": {
+    "urls": ["https://anivox.fun/*"]
+  },
+  "permissions": ["allow-set-discord-rpc"]
+}
