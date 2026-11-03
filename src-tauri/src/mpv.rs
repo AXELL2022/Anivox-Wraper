@@ -11,6 +11,31 @@ use std::process::Command;
 use std::sync::Mutex;
 use tauri::Manager;
 
+/// Where a macOS app bundle can find MPV: apps started from Finder do not
+/// inherit the shell PATH, so Homebrew and MacPorts locations are not visible.
+const MACOS_MPV_CANDIDATES: [&str; 4] = [
+    "/opt/homebrew/bin/mpv",
+    "/usr/local/bin/mpv",
+    "/opt/local/bin/mpv",
+    "/Applications/mpv.app/Contents/MacOS/mpv",
+];
+
+pub(crate) fn first_existing_file(candidates: &[&str]) -> Option<String> {
+    candidates
+        .iter()
+        .find(|path| Path::new(path).is_file())
+        .map(|path| (*path).to_owned())
+}
+
+/// Explicit executable used when the settings name none; `None` keeps `mpv` on PATH.
+fn default_mpv_path() -> Option<String> {
+    if cfg!(target_os = "macos") {
+        first_existing_file(&MACOS_MPV_CANDIDATES)
+    } else {
+        None
+    }
+}
+
 pub(crate) fn build_mpv_command(
     settings: &PlayerSettings,
     log_path: &Path,
@@ -590,7 +615,7 @@ pub async fn open_in_mpv(
         tauri::async_runtime::spawn_blocking(move || {
             let settings = cached_player_settings(&app_copy)?;
             let settings = PlayerSettings {
-                mpv_path: validate_mpv_path(settings.mpv_path)?,
+                mpv_path: validate_mpv_path(settings.mpv_path)?.or_else(default_mpv_path),
                 ..settings
             };
             let logs = player_logs_path(&app_copy)?;

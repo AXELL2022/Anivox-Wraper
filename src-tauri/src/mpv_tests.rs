@@ -440,3 +440,38 @@ fn old_settings_default_mirror_off_and_new_setting_is_persisted() {
     .unwrap();
     assert!(load_player_settings(&path).unwrap().mirror_embedded);
 }
+
+#[test]
+fn macos_mpv_candidates_pick_the_first_existing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing");
+    let first = dir.path().join("first");
+    let second = dir.path().join("second");
+    std::fs::write(&first, b"").unwrap();
+    std::fs::write(&second, b"").unwrap();
+    let paths = [
+        missing.to_str().unwrap(),
+        first.to_str().unwrap(),
+        second.to_str().unwrap(),
+    ];
+    assert_eq!(
+        first_existing_file(&paths).as_deref(),
+        first.to_str(),
+        "earlier candidates win"
+    );
+    assert_eq!(first_existing_file(&[missing.to_str().unwrap()]), None);
+}
+
+#[test]
+fn picked_mpv_app_bundle_resolves_to_its_executable() {
+    let dir = tempfile::tempdir().unwrap();
+    let bundle = dir.path().join("mpv.app");
+    std::fs::create_dir_all(&bundle).unwrap();
+    assert_eq!(
+        normalize_mpv_selection(bundle.clone()),
+        bundle.join("Contents/MacOS/mpv")
+    );
+    let plain = dir.path().join("mpv");
+    std::fs::write(&plain, b"").unwrap();
+    assert_eq!(normalize_mpv_selection(plain.clone()), plain);
+}

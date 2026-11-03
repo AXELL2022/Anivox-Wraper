@@ -1,6 +1,3 @@
-// The macOS binary has a separate minimal entry point (macos.rs).
-#![cfg(not(target_os = "macos"))]
-
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
@@ -8,6 +5,8 @@ use tauri_plugin_updater::UpdaterExt;
 mod discord;
 mod discord_presence;
 mod local_overlay;
+#[cfg(target_os = "macos")]
+mod macos_shell;
 mod mpv;
 mod player_settings;
 mod session;
@@ -149,11 +148,10 @@ fn layout_webviews(window: &tauri::Window) -> tauri::Result<()> {
     let size = window
         .inner_size()?
         .to_logical::<f64>(window.scale_factor()?);
-    let fullscreen = cfg!(target_os = "windows")
-        && window
-            .state::<BrowserState>()
-            .fullscreen
-            .load(std::sync::atomic::Ordering::Relaxed);
+    let fullscreen = window
+        .state::<BrowserState>()
+        .fullscreen
+        .load(std::sync::atomic::Ordering::Relaxed);
     let top = if fullscreen { 0.0 } else { TOOLBAR_HEIGHT };
     if let Some(toolbar) = window.get_webview("toolbar") {
         toolbar.set_bounds(tauri::Rect {
@@ -498,12 +496,16 @@ async fn browser_action(
     action: String,
 ) -> Result<(), String> {
     ensure_toolbar_access(&webview)?;
+    run_browser_action(&app, &action)
+}
+
+fn run_browser_action(app: &tauri::AppHandle, action: &str) -> Result<(), String> {
     let content = app.get_webview("content").ok_or("Окно сайта недоступно")?;
-    let result = match action.as_str() {
+    let result = match action {
         "back" => content.eval("window.history.back()"),
         "forward" => content.eval("window.history.forward()"),
         "reload" => {
-            site_recovery::begin(&app);
+            site_recovery::begin(app);
             let last_url = app
                 .state::<BrowserState>()
                 .url
@@ -917,11 +919,7 @@ pub fn run() {
                             let _ = w.set_focus();
                         }
                     }
-                    "quit" => {
-                        if let Some(window) = app.get_window("main").or_else(|| app.get_window("content")) { if let Err(err) = session::capture_geometry(&window) { eprintln!("Не удалось запомнить окно: {err}"); } }
-                        if let Err(err) = session::flush(app) { eprintln!("Не удалось сохранить сеанс: {err}"); }
-                        app.exit(0);
-                    }
+                    "quit" => quit_app(app),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -951,7 +949,16 @@ pub fn run() {
 
             tray_builder.build(app)?;
 
+            #[cfg(target_os = "macos")]
+            macos_shell::install_menu(app)?;
+
             Ok(())
+        })
+        .on_menu_event(|app, event| {
+            #[cfg(target_os = "macos")]
+            macos_shell::on_menu_event(app, event.id().as_ref());
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
         })
         .on_window_event(|window, event| {
             if !is_primary_window(window.label()) { return; }
@@ -1009,6 +1016,34 @@ pub fn run() {
             shikimori_action,
             close_shikimori
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|app, event| {
+            #[cfg(target_os = "macos")]
+            macos_shell::on_run_event(app, &event);
+            #[cfg(not(target_os = "macos"))]
+            let _ = (app, event);
+        });
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn show_primary_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_window("main").or_else(|| app.get_window("content")) {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+/// Saves the window geometry and session, then exits (tray "Exit", Cmd+Q).
+fn quit_app(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_window("main").or_else(|| app.get_window("content")) {
+        if let Err(err) = session::capture_geometry(&window) {
+            eprintln!("Не удалось запомнить окно: {err}");
+        }
+    }
+    if let Err(err) = session::flush(app) {
+        eprintln!("Не удалось сохранить сеанс: {err}");
+    }
+    app.exit(0);
 }

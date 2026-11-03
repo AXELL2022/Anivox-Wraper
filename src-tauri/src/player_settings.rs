@@ -26,6 +26,16 @@ pub(crate) fn cached_player_settings(app: &tauri::AppHandle) -> Result<PlayerSet
     Ok(settings)
 }
 
+/// On macOS the picker can return the `mpv.app` bundle; the executable is inside it.
+pub(crate) fn normalize_mpv_selection(path: PathBuf) -> PathBuf {
+    let is_bundle = path.is_dir() && path.extension().is_some_and(|ext| ext == "app");
+    if is_bundle {
+        path.join("Contents/MacOS/mpv")
+    } else {
+        path
+    }
+}
+
 pub(crate) fn validate_mpv_path(value: Option<String>) -> Result<Option<String>, String> {
     let value = value.unwrap_or_default().trim().to_owned();
     if value.is_empty() {
@@ -154,7 +164,7 @@ pub async fn pick_mpv_executable(
             .blocking_pick_file()
             .map(|file| {
                 file.into_path()
-                    .map(|path| path.to_string_lossy().into_owned())
+                    .map(|path| normalize_mpv_selection(path).to_string_lossy().into_owned())
                     .map_err(|err| err.to_string())
             })
             .transpose()
