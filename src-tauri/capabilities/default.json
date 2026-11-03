@@ -4,7 +4,7 @@
   "description": "Capability for the main window",
   "webviews": ["content"],
   "remote": {
-    "urls": ["https://anivox.fun/*"]
+    "urls": ["https://anivox.fun/*", "https://anivox.me/*"]
   },
   "permissions": [
     "core:default",

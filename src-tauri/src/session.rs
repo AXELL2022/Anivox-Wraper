@@ -117,8 +117,9 @@ pub fn trusted_page(value: &str) -> Option<tauri::Url> {
     }
     let url = tauri::Url::parse(value).ok()?;
     if url.scheme() != "https"
-        || url.host_str() != Some("anivox.fun")
-        || url.port_or_known_default() != Some(443)
+        || !crate::site_hosts::is_site_origin(&url)
+        // Mirrors are opened only by explicit choice, never restored at startup.
+        || url.host_str() != Some(crate::site_hosts::SITE_HOSTS[0])
         || !url.username().is_empty()
         || url.password().is_some()
         || url.fragment().is_some()
@@ -616,6 +617,9 @@ mod tests {
             "https://anivox.fun.evil.test/",
             "https://sub.anivox.fun/",
             "https://anivox.fun:444/",
+            "https://anivox.me/anime/42",
+            "https://anivox.me:444/",
+            "https://anivox.me.evil.test/",
             "https://user@anivox.fun/",
             "https://:secret@anivox.fun/",
             "https://@anivox.fun/",

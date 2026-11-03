@@ -9,9 +9,10 @@
   const spinner = document.querySelector('#spinner');
   const actionError = document.querySelector('#action-error');
   const retry = document.querySelector('#retry');
+  const mirror = document.querySelector('#mirror');
   const home = document.querySelector('#home');
   const wait = document.querySelector('#wait');
-  const buttons = [retry, home, wait];
+  const buttons = [retry, mirror, home, wait];
   let pending = false;
   let eventSequence = 0;
   let generation = -1;
@@ -55,6 +56,7 @@
   }
 
   retry.addEventListener('click', () => action('retry'));
+  mirror.addEventListener('click', () => action('mirror'));
   home.addEventListener('click', () => action('home'));
   wait.addEventListener('click', () => action('wait'));
 

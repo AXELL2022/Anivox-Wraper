@@ -84,7 +84,7 @@ test('Backend error details are text only and cleared by the next state', async 
   assert.equal(app.element('#detail').hidden, true);
 });
 
-for (const action of ['retry', 'home', 'wait']) {
+for (const action of ['retry', 'mirror', 'home', 'wait']) {
   test(`${action} uses only the local recovery command and blocks overlapping actions`, async () => {
     const request = deferred();
     const calls = [];
@@ -94,14 +94,14 @@ for (const action of ['retry', 'home', 'wait']) {
       return request.promise;
     });
     const pending = app.click(`#${action}`);
-    for (const button of ['retry', 'home', 'wait']) {
+    for (const button of ['retry', 'mirror', 'home', 'wait']) {
       assert.equal(app.element(`#${button}`).disabled, true);
       await app.click(`#${button}`);
     }
     assert.deepEqual(calls, [['site_recovery_action', action]]);
     request.reject(new Error('<b>IPC failed</b>'));
     await pending;
-    for (const button of ['retry', 'home', 'wait']) assert.equal(app.element(`#${button}`).disabled, false);
+    for (const button of ['retry', 'mirror', 'home', 'wait']) assert.equal(app.element(`#${button}`).disabled, false);
     assert.match(app.element('#action-error').textContent, /<b>IPC failed<\/b>/);
     assert.equal(app.element('#action-error').hidden, false);
     await app.click(`#${action}`);
@@ -127,7 +127,7 @@ test('Successful wait delegates hiding to the backend and clears earlier action 
 test('Initial query failure remains recoverable with enabled actions', async () => {
   const app = await localWindow(file, async () => { throw new Error('query failed'); });
   assert.match(app.element('#action-error').textContent, /query failed/);
-  for (const button of ['retry', 'home', 'wait']) assert.equal(app.element(`#${button}`).disabled, false);
+  for (const button of ['retry', 'mirror', 'home', 'wait']) assert.equal(app.element(`#${button}`).disabled, false);
 });
 
 test('Static page has status semantics, local assets, and reduced-motion spinner', () => {

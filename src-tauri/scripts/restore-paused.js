@@ -1,6 +1,6 @@
 // A restored page is opened for context, not permission to start playback.
 (() => {
-    if (window !== window.top || location.origin !== 'https://anivox.fun') return;
+    if (window !== window.top || !['https://anivox.fun', 'https://anivox.me'].includes(location.origin)) return;
     let blocked = true;
     const original = HTMLMediaElement.prototype.play;
     const unlock = event => {

@@ -238,7 +238,7 @@
     }
 
     // The local toolbar is separate; only player hooks belong in the site.
-    if (window !== window.top || location.origin !== 'https://anivox.fun') return;
+    if (window !== window.top || !['https://anivox.fun', 'https://anivox.me'].includes(location.origin)) return;
 
     function setBtnStatus(text, color, resetAfterMs, detail = null) {
         window.__TAURI__.core.invoke('report_player_status', { text, color, resetAfterMs, detail }).catch(console.error);

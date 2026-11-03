@@ -19,6 +19,7 @@ pub(crate) fn build_mpv_command(
     start_time: Option<f64>,
     sub_url: Option<String>,
     token: Option<String>,
+    site_origin: &str,
 ) -> Command {
     let mut cmd = Command::new(settings.mpv_path.as_deref().unwrap_or("mpv"));
 
@@ -41,8 +42,8 @@ pub(crate) fn build_mpv_command(
     }
 
     // Pass headers cleanly to MPV and FFmpeg demuxer
-    cmd.arg("--referrer=https://anivox.fun/");
-    cmd.arg("--http-header-fields-append=Origin: https://anivox.fun");
+    cmd.arg(format!("--referrer={site_origin}/"));
+    cmd.arg(format!("--http-header-fields-append=Origin: {site_origin}"));
     if let Some(tok) = token {
         if !tok.is_empty() {
             cmd.arg(format!(
@@ -579,6 +580,11 @@ pub async fn open_in_mpv(
 ) -> Result<MpvLaunchInfo, String> {
     let state = app.state::<MpvState>();
     let _launch = state.launch.try_lock().map_err(|_| "MPV уже запускается")?;
+    let site_origin = crate::site_hosts::site_origin_for(
+        app.get_webview("content")
+            .and_then(|view| view.url().ok())
+            .as_ref(),
+    );
     let app_copy = app.clone();
     let (command, session_id, mirror_embedded, ipc_dir, endpoint) =
         tauri::async_runtime::spawn_blocking(move || {
@@ -610,6 +616,7 @@ pub async fn open_in_mpv(
                 start_time,
                 sub_url,
                 token,
+                &site_origin,
             );
             // Insert before the option terminator; URLs always remain positional arguments.
             let args: Vec<_> = command.get_args().map(|s| s.to_os_string()).collect();

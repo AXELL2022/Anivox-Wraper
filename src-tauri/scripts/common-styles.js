@@ -1,6 +1,6 @@
 // Performance-oriented CSS and scroll handling for the Anivox site
 (function() {
-    if (window !== window.top || location.origin !== 'https://anivox.fun') return;
+    if (window !== window.top || !['https://anivox.fun', 'https://anivox.me'].includes(location.origin)) return;
 
     function setupCommonStyles() {
         const style = document.createElement('style');

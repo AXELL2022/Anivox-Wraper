@@ -97,6 +97,7 @@ fn mpv_command_preserves_metadata_and_uses_app_log_path() {
         Some(42.5),
         Some("https://cdn.example/sub.vtt".into()),
         Some("test-token".into()),
+        "https://anivox.me",
     );
     assert_eq!(command.get_program(), "custom mpv.exe");
     assert!(command.get_current_dir().is_none());
@@ -109,7 +110,8 @@ fn mpv_command_preserves_metadata_and_uses_app_log_path() {
         "--start=42.50",
         "--sub-file=https://cdn.example/sub.vtt",
         "--http-header-fields-append=Authorization: Bearer test-token",
-        "--referrer=https://anivox.fun/",
+        "--referrer=https://anivox.me/",
+        "--http-header-fields-append=Origin: https://anivox.me",
         "--log-file=журналы с пробелом/mpv.log",
     ] {
         assert!(args.contains(&expected.to_string()), "missing {expected}");
@@ -123,6 +125,7 @@ fn mpv_command_preserves_metadata_and_uses_app_log_path() {
         None,
         None,
         None,
+        "https://anivox.fun",
     );
     assert_eq!(default.get_program(), "mpv");
 }

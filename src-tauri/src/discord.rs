@@ -68,7 +68,9 @@ pub(crate) fn build_discord_activity(presence: &DiscordPresence) -> activity::Ac
     }
     activity = activity.assets(assets);
     let mut buttons = Vec::new();
-    if let Some(url) = discord_public_url(presence.anime_url.as_deref(), Some("anivox.fun")) {
+    if let Some(url) = discord_public_url(presence.anime_url.as_deref(), None).filter(|url| {
+        tauri::Url::parse(url).is_ok_and(|url| crate::site_hosts::is_site_origin(&url))
+    }) {
         buttons.push(activity::Button::new("Открыть аниме", url));
     }
     if let Some(url) = discord_public_url(presence.shikimori_url.as_deref(), Some("shikimori.io")) {
@@ -147,6 +149,14 @@ pub(crate) fn title_id(url: &tauri::Url, host: &str, section: &str) -> Option<u6
     segment[..digits].parse().ok().filter(|id| *id > 0)
 }
 
+/// Title id from an Anivox page (`/anime/<id>-slug`) on the main site or a mirror.
+pub(crate) fn site_title_id(url: &tauri::Url) -> Option<u64> {
+    if !crate::site_hosts::is_site_origin(url) {
+        return None;
+    }
+    title_id(url, url.host_str()?, "anime")
+}
+
 pub(crate) fn presence_title_id(presence: &DiscordPresence) -> Option<u64> {
     let by_shikimori = presence
         .shikimori_url
@@ -156,7 +166,7 @@ pub(crate) fn presence_title_id(presence: &DiscordPresence) -> Option<u64> {
     // Anivox pages share the Shikimori id, which covers titles without `shikimori_id`.
     by_shikimori.or_else(|| {
         let url = tauri::Url::parse(presence.anime_url.as_deref()?).ok()?;
-        title_id(&url, "anivox.fun", "anime")
+        site_title_id(&url)
     })
 }
 

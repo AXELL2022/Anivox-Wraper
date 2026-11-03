@@ -3,7 +3,7 @@
 // immediately (a stalled download is visible while it is still stalled), and the speed is
 // measured over a short sliding window so it recovers quickly after a problem ends.
 (() => {
-    if (window !== window.top || location.origin !== 'https://anivox.fun') return;
+    if (window !== window.top || !['https://anivox.fun', 'https://anivox.me'].includes(location.origin)) return;
     if (window.__anivoxSegmentMonitor) return;
     window.__anivoxSegmentMonitor = true;
     const MEDIA = /\.(ts|m4s|mp4|aac|m4a|cmfv|cmfa)(?:$|[?#])/i;

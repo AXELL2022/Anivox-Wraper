@@ -7,6 +7,7 @@ mod local_overlay;
 mod mpv;
 mod player_settings;
 mod session;
+mod site_hosts;
 mod site_recovery;
 mod tray_settings;
 mod updater;
@@ -537,7 +538,7 @@ fn ensure_toolbar_access(webview: &tauri::Webview) -> Result<(), String> {
 }
 
 fn shikimori_overlay_url(content: &tauri::Url) -> tauri::Url {
-    discord::title_id(content, "anivox.fun", "anime")
+    discord::site_title_id(content)
         .and_then(|id| tauri::Url::parse(&format!("https://shikimori.io/animes/{id}")).ok())
         .unwrap_or_else(|| tauri::Url::parse("https://shikimori.io/").expect("static URL"))
 }
@@ -746,7 +747,7 @@ pub fn run() {
 
             let restore_guard = if startup_url.as_str() != session::HOME_URL {
                 let token = format!("{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
-                format!(";if (location.origin === 'https://anivox.fun' && sessionStorage.getItem('anivox-restore-unlocked') !== '{token}') {{ window.__anivoxRestoreToken = '{token}'; {} }}", include_str!("../scripts/restore-paused.js"))
+                format!(";if ({}.includes(location.origin) && sessionStorage.getItem('anivox-restore-unlocked') !== '{token}') {{ window.__anivoxRestoreToken = '{token}'; {} }}", site_hosts::js_origins(), include_str!("../scripts/restore-paused.js"))
             } else { String::new() };
             let script_storage = format!("{}\n{}\n{}\n{}", restore_guard, SCRIPT, include_str!("../scripts/site-lifecycle.js"), include_str!("../scripts/segment-monitor.js"));
             let script = script_storage.as_str();

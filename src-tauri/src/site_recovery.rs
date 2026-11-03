@@ -10,6 +10,7 @@ mod tests {
             "chrome-error://chromewebdata/",
             "data:text/html,",
             "https://anivox.fun/",
+            "https://anivox.me/",
         ] {
             assert!(
                 !is_external_document(&tauri::Url::parse(value).unwrap()),
@@ -154,7 +155,7 @@ pub(crate) fn begin(app: &tauri::AppHandle) {
 pub(crate) fn is_external_document(url: &tauri::Url) -> bool {
     matches!(url.scheme(), "https" | "http")
         && url.host_str().is_some()
-        && url.host_str() != Some("anivox.fun")
+        && !url.host_str().is_some_and(crate::site_hosts::is_site_host)
 }
 pub(crate) fn ready(app: &tauri::AppHandle) {
     finish(app, snapshot(app).generation);
@@ -263,6 +264,7 @@ pub(crate) async fn site_recovery_action(
     let content = app.get_webview("content").ok_or("Окно сайта недоступно")?;
     let url = match action.as_str() {
         "home" => "https://anivox.fun/".parse().unwrap(),
+        "mirror" => "https://anivox.me/".parse().unwrap(),
         "retry" => app
             .state::<crate::BrowserState>()
             .url
@@ -284,9 +286,7 @@ pub(crate) fn get_site_document_generation(
     webview: tauri::Webview,
 ) -> Result<u64, String> {
     let native = webview.url().map_err(|e| e.to_string())?;
-    if webview.label() != "content"
-        || native.origin() != tauri::Url::parse("https://anivox.fun/").unwrap().origin()
-    {
+    if webview.label() != "content" || !crate::site_hosts::is_site_origin(&native) {
         return Err("Недопустимый источник состояния сайта".into());
     }
     Ok(snapshot(&app).generation)
@@ -301,9 +301,7 @@ pub(crate) fn site_document_state(
     generation: u64,
 ) -> Result<(), String> {
     let native = webview.url().map_err(|e| e.to_string())?;
-    if webview.label() != "content"
-        || native.origin() != tauri::Url::parse("https://anivox.fun/").unwrap().origin()
-    {
+    if webview.label() != "content" || !crate::site_hosts::is_site_origin(&native) {
         return Err("Недопустимый источник состояния сайта".into());
     }
     let url = tauri::Url::parse(&href).map_err(|e| e.to_string())?;

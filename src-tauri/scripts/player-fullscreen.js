@@ -1,6 +1,6 @@
 // Fullscreen controls for the Anivox web player: sync with the native window and double-click toggle
 (function() {
-    if (window !== window.top || location.origin !== 'https://anivox.fun') return;
+    if (window !== window.top || !['https://anivox.fun', 'https://anivox.me'].includes(location.origin)) return;
 
     document.addEventListener('fullscreenchange', () => {
         window.__TAURI__.core.invoke('content_fullscreen', {

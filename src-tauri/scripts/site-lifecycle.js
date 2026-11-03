@@ -1,6 +1,6 @@
 // Only reports top-level document/SPA lifecycle, never media buffering failures.
 (() => {
-    if (window !== window.top || location.origin !== 'https://anivox.fun') return;
+    if (window !== window.top || !['https://anivox.fun', 'https://anivox.me'].includes(location.origin)) return;
     const attempt = window.__TAURI__?.core.invoke('get_site_document_generation');
     const report = loaded => {
         const href = location.href;
