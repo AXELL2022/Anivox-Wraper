@@ -170,6 +170,8 @@ fn layout_webviews(window: &tauri::Window) -> tauri::Result<()> {
             size: tauri::LogicalSize::new(size.width, (size.height - top).max(1.0)).into(),
         })?;
     }
+    #[cfg(target_os = "macos")]
+    macos_shell::log_layout(window);
     site_recovery::layout(window)?;
     layout_shikimori(window, top)?;
     local_overlay::layout(window)

@@ -81,3 +81,47 @@ pub(crate) fn on_run_event(app: &tauri::AppHandle, event: &tauri::RunEvent) {
         crate::show_primary_window(app);
     }
 }
+
+/// Temporary diagnostics for the toolbar layout on macOS: appends the window
+/// size and the real webview bounds to `<app_local_data_dir>/logs/layout.log`
+/// (first lines only), so a wrong offset can be read off instead of guessed.
+pub(crate) fn log_layout(window: &tauri::Window) {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tauri::Manager;
+
+    static LINES: AtomicUsize = AtomicUsize::new(0);
+    if LINES.fetch_add(1, Ordering::Relaxed) >= 40 {
+        return;
+    }
+    let Ok(dir) = window.app_handle().path().app_local_data_dir() else {
+        return;
+    };
+    let dir = dir.join("logs");
+    let _ = std::fs::create_dir_all(&dir);
+    let bounds = |label: &str| {
+        window
+            .get_webview(label)
+            .map(|view| format!("{:?}", view.bounds()))
+            .unwrap_or_else(|| "-".into())
+    };
+    let line = format!(
+        "inner={:?} outer={:?} scale={:?} fullscreen={} toolbar={} content={}\n",
+        window.inner_size(),
+        window.outer_size(),
+        window.scale_factor(),
+        window
+            .state::<crate::BrowserState>()
+            .fullscreen
+            .load(Ordering::Relaxed),
+        bounds("toolbar"),
+        bounds("content"),
+    );
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("layout.log"))
+    {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
