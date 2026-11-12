@@ -6,6 +6,7 @@ mod connection;
 mod ipc;
 mod session;
 mod settings;
+mod site_recovery;
 mod tray;
 mod vblank;
 
@@ -28,12 +29,13 @@ const IPC_HANDLER: &str = "anivox";
 const APP_DIR: &str = "com.yasin.anivox";
 
 // The same site scripts the Tauri shell injects on Linux, in the same order.
-const SITE_SCRIPTS: [&str; 6] = [
+const SITE_SCRIPTS: [&str; 7] = [
     include_str!("../../src-tauri/scripts/inject-linux.js"),
     include_str!("../../src-tauri/scripts/mpv-session.js"),
     include_str!("../../src-tauri/scripts/inject-common.js"),
     include_str!("../../src-tauri/scripts/player-fullscreen.js"),
     include_str!("../../src-tauri/scripts/common-styles.js"),
+    include_str!("../../src-tauri/scripts/site-lifecycle.js"),
     include_str!("../../src-tauri/scripts/segment-monitor.js"),
 ];
 const IPC_SHIM: &str = include_str!("../scripts/ipc-shim.js");
@@ -48,80 +50,71 @@ fn safe_color(value: &str) -> &str {
     }
 }
 
-/// Applies requests from the IPC worker threads to the widgets.
-fn handle_ui_event(
-    event: ipc::UiEvent,
-    window: &gtk4::ApplicationWindow,
-    header: &gtk4::HeaderBar,
-    status: &gtk4::Label,
-    generation: &Rc<Cell<u64>>,
-) {
-    match event {
-        ipc::UiEvent::Fullscreen(on) => {
-            window.set_fullscreened(on);
-            header.set_visible(!on);
-        }
-        ipc::UiEvent::Status {
-            text,
-            color,
-            reset_after_ms,
-            detail,
-        } => {
-            let markup = format!(
-                "<span foreground=\"{}\">{}</span>",
-                safe_color(&color),
-                glib::markup_escape_text(&text)
-            );
-            status.set_markup(&markup);
-            status.set_tooltip_text(detail.as_deref());
-            status.set_visible(true);
-            let mine = generation.get() + 1;
-            generation.set(mine);
-            if reset_after_ms > 0 {
-                let status = status.clone();
-                let generation = generation.clone();
-                glib::timeout_add_local_once(
-                    std::time::Duration::from_millis(reset_after_ms),
-                    move || {
-                        if generation.get() == mine {
-                            status.set_visible(false);
-                        }
-                    },
-                );
+/// Main-thread widgets that react to requests from the IPC worker threads.
+struct Shell {
+    window: gtk4::ApplicationWindow,
+    header: gtk4::HeaderBar,
+    status: gtk4::Label,
+    status_generation: Cell<u64>,
+    recovery: Rc<site_recovery::Recovery>,
+}
+
+impl Shell {
+    fn handle(self: &Rc<Self>, event: ipc::UiEvent) {
+        match event {
+            ipc::UiEvent::Fullscreen(on) => {
+                self.window.set_fullscreened(on);
+                self.header.set_visible(!on);
             }
+            ipc::UiEvent::SiteReady(generation) => self.recovery.finish(generation),
+            ipc::UiEvent::Status {
+                text,
+                color,
+                reset_after_ms,
+                detail,
+            } => self.show_status(&text, &color, reset_after_ms, detail.as_deref()),
+        }
+    }
+
+    fn show_status(
+        self: &Rc<Self>,
+        text: &str,
+        color: &str,
+        reset_after_ms: u64,
+        detail: Option<&str>,
+    ) {
+        let markup = format!(
+            "<span foreground=\"{}\">{}</span>",
+            safe_color(color),
+            glib::markup_escape_text(text)
+        );
+        self.status.set_markup(&markup);
+        self.status.set_tooltip_text(detail);
+        self.status.set_visible(true);
+        let mine = self.status_generation.get() + 1;
+        self.status_generation.set(mine);
+        if reset_after_ms > 0 {
+            let shell = Rc::downgrade(self);
+            glib::timeout_add_local_once(
+                std::time::Duration::from_millis(reset_after_ms),
+                move || {
+                    if let Some(shell) = shell.upgrade() {
+                        if shell.status_generation.get() == mine {
+                            shell.status.set_visible(false);
+                        }
+                    }
+                },
+            );
         }
     }
 }
 
 /// Installs `window.__TAURI__.core.invoke` for trusted site pages and answers
 /// it from [`ipc::Ipc`]. Commands run off the GTK main thread.
-fn setup_ipc(
-    webview: &WebView,
-    window: &gtk4::ApplicationWindow,
-    header: &gtk4::HeaderBar,
-    ipc: Arc<ipc::Ipc>,
-    rx: async_channel::Receiver<ipc::UiEvent>,
-    restore_guard: Option<String>,
-) {
+fn setup_ipc(webview: &WebView, ipc: Arc<ipc::Ipc>, restore_guard: Option<String>) {
     let Some(manager) = webview.user_content_manager() else {
         return;
     };
-
-    let status = gtk4::Label::new(None);
-    status.set_visible(false);
-    header.pack_end(&status);
-    let generation = Rc::new(Cell::new(0u64));
-    glib::spawn_future_local(glib::clone!(
-        #[weak]
-        window,
-        #[weak]
-        header,
-        async move {
-            while let Ok(event) = rx.recv().await {
-                handle_ui_event(event, &window, &header, &status, &generation);
-            }
-        }
-    ));
 
     let allow: Vec<String> = site_hosts::SITE_HOSTS
         .iter()
@@ -259,8 +252,12 @@ fn build_window(app: &gtk4::Application) {
         .title("Anivox")
         .default_width(width)
         .default_height(height)
-        .child(&webview)
         .build();
+    // The site fills the window; the recovery screen and Shikimori lie above it.
+    let overlay = gtk4::Overlay::new();
+    overlay.set_child(Some(&webview));
+    window.set_child(Some(&overlay));
+    let recovery = site_recovery::install(&overlay, &webview, ipc.host().site_load());
     window.set_size_request(session::MIN_WIDTH, session::MIN_HEIGHT);
     if saved.maximized {
         window.maximize();
@@ -286,7 +283,22 @@ fn build_window(app: &gtk4::Application) {
     header.pack_end(&settings_button);
     let connection_button = connection::button(&ipc);
     header.pack_end(&connection_button);
+    let status = gtk4::Label::new(None);
+    status.set_visible(false);
+    header.pack_end(&status);
     window.set_titlebar(Some(&header));
+    let shell = Rc::new(Shell {
+        window: window.clone(),
+        header: header.clone(),
+        status,
+        status_generation: Cell::new(0),
+        recovery,
+    });
+    glib::spawn_future_local(async move {
+        while let Ok(event) = ui_rx.recv().await {
+            shell.handle(event);
+        }
+    });
 
     back.connect_clicked(glib::clone!(
         #[weak]
@@ -362,14 +374,7 @@ fn build_window(app: &gtk4::Application) {
     });
 
     let startup = saved.startup_url();
-    setup_ipc(
-        &webview,
-        &window,
-        &header,
-        ipc,
-        ui_rx,
-        session::restore_guard_script(&startup),
-    );
+    setup_ipc(&webview, ipc, session::restore_guard_script(&startup));
     webview.load_uri(startup.as_str());
     window.present();
 }

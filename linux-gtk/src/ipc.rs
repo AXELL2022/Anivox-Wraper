@@ -3,6 +3,7 @@
 //! is sent to the main thread as a [`UiEvent`].
 
 use crate::connection::SegmentStats;
+use crate::site_recovery::{self, SharedLoad};
 use anivox_core::discord_presence::{update_discord_presence, DiscordPresence};
 use anivox_core::mpv::{PlaybackMedia, ResumePoint};
 use anivox_core::mpv_session::{self as session, MpvHost, MpvLaunchRequest, MpvState};
@@ -28,6 +29,8 @@ pub enum UiEvent {
         detail: Option<String>,
     },
     Fullscreen(bool),
+    /// `site-lifecycle.js` saw the site app mount for this load attempt.
+    SiteReady(u64),
 }
 
 struct Shared {
@@ -41,6 +44,7 @@ struct Shared {
     ui: async_channel::Sender<UiEvent>,
     /// Latest video segment summary from `segment-monitor.js`.
     segments: Mutex<Option<SegmentStats>>,
+    site_load: SharedLoad,
 }
 
 #[derive(Clone)]
@@ -57,6 +61,7 @@ impl GtkHost {
             page: Mutex::new(None),
             ui,
             segments: Mutex::new(None),
+            site_load: SharedLoad::default(),
         }))
     }
 
@@ -64,6 +69,15 @@ impl GtkHost {
         if let Ok(mut page) = self.0.page.lock() {
             *page = uri;
         }
+    }
+
+    /// Load watchdog state shared with the recovery screen.
+    pub fn site_load(&self) -> SharedLoad {
+        self.0.site_load.clone()
+    }
+
+    fn page(&self) -> Option<String> {
+        self.0.page.lock().ok().and_then(|page| page.clone())
     }
 
     fn send(&self, event: UiEvent) {
@@ -121,6 +135,13 @@ struct OpenInMpv {
     sub_url: Option<String>,
     token: Option<String>,
     media: Option<PlaybackMedia>,
+}
+
+#[derive(Deserialize)]
+struct DocumentState {
+    href: String,
+    loaded: bool,
+    generation: u64,
 }
 
 #[derive(Deserialize)]
@@ -200,6 +221,22 @@ impl Ipc {
                 let stats: SegmentStats =
                     from_json(args.get("stats").cloned().unwrap_or(Value::Null))?;
                 *self.host.0.segments.lock().map_err(err)? = Some(stats.sanitized());
+                Ok(Value::Null)
+            }
+            "get_site_document_generation" => {
+                let info = self.host.0.site_load.lock().map_err(err)?;
+                Ok(Value::from(info.generation))
+            }
+            "site_document_state" => {
+                let report: DocumentState = from_json(args)?;
+                let page = self.host.page().ok_or("Страница неизвестна")?;
+                let current = self.host.0.site_load.lock().map_err(err)?.generation;
+                if site_recovery::document_report_matches(&page, &report.href)?
+                    && report.generation == current
+                    && report.loaded
+                {
+                    self.host.send(UiEvent::SiteReady(report.generation));
+                }
                 Ok(Value::Null)
             }
             "content_fullscreen" => {
@@ -335,6 +372,41 @@ mod tests {
         .unwrap();
         let stats = ipc.segment_stats().unwrap();
         assert_eq!((stats.host.as_str(), stats.mbps), ("cdn", 12.5));
+    }
+
+    #[test]
+    fn only_the_current_page_and_attempt_can_end_the_loading_screen() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ipc, rx) = ipc(dir.path());
+        ipc.host().site_load().lock().unwrap().begin();
+        ipc.host()
+            .set_page(Some("https://anivox.fun/anime/1".into()));
+        assert_eq!(
+            ipc.handle("get_site_document_generation", json!({}))
+                .unwrap(),
+            json!(1)
+        );
+        let report = |href: &str, generation: u64| json!({"href": href, "loaded": true, "generation": generation});
+        ipc.handle("site_document_state", report("https://anivox.fun/", 1))
+            .unwrap();
+        ipc.handle(
+            "site_document_state",
+            report("https://anivox.fun/anime/1", 0),
+        )
+        .unwrap();
+        assert!(ipc
+            .handle(
+                "site_document_state",
+                report("https://evil.test/anime/1", 1)
+            )
+            .is_err());
+        assert!(rx.try_recv().is_err());
+        ipc.handle(
+            "site_document_state",
+            report("https://anivox.fun/anime/1", 1),
+        )
+        .unwrap();
+        assert!(matches!(rx.try_recv().unwrap(), UiEvent::SiteReady(1)));
     }
 
     #[test]
