@@ -15,15 +15,31 @@
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-$(Platform.ToLower())</RuntimeIdentifier>
     <UseWinUI>true</UseWinUI>
     <Nullable>enable</Nullable>
+    <!-- Program.cs owns Main: single instance via AppInstance before XAML starts. -->
+    <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
     <!-- Unpackaged exe: no MSIX, Windows App SDK runtime is copied next to the exe. -->
     <WindowsPackageType>None</WindowsPackageType>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <SelfContained>true</SelfContained>
   </PropertyGroup>
 
+  <!-- Rust core (windows-winui/native, anivox_ffi.dll) built by cargo for the same platform. -->
+  <PropertyGroup>
+    <CargoTarget Condition="'$(Platform)' == 'ARM64'">aarch64-pc-windows-msvc</CargoTarget>
+    <CargoTarget Condition="'$(CargoTarget)' == ''">x86_64-pc-windows-msvc</CargoTarget>
+    <CargoProfile Condition="'$(Configuration)' == 'Release'">release</CargoProfile>
+    <CargoProfile Condition="'$(CargoProfile)' == ''">debug</CargoProfile>
+    <CargoFlags Condition="'$(Configuration)' == 'Release'">--release</CargoFlags>
+    <NativeDir>$(MSBuildThisFileDirectory)native\</NativeDir>
+    <NativeDll>$(NativeDir)target\$(CargoTarget)\$(CargoProfile)\anivox_ffi.dll</NativeDll>
+  </PropertyGroup>
+
+  <Target Name="BuildAnivoxCore" BeforeTargets="BeforeBuild" Condition="'$(SkipCargo)' != 'true'">
+    <Exec Command="cargo build --locked $(CargoFlags) --target $(CargoTarget) --manifest-path &quot;$(NativeDir)Cargo.toml&quot;" />
+  </Target>
+
   <ItemGroup>
-    <!-- Same DirectComposition / RTX VSR CSS resets as the Tauri build. -->
-    <EmbeddedResource Include="..\src-tauri\scripts\inject-windows.js" LogicalName="inject-windows.js" />
+    <None Include="$(NativeDll)" Link="anivox_ffi.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" />
     <Content Include="..\src-tauri\icons\icon.ico" Link="Assets\icon.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

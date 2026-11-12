@@ -1,0 +1,28 @@
+[package]
+name = "anivox-ffi"
+version = "0.5.0"
+description = "Anivox core for the WinUI 3 shell: C ABI over anivox-core (site IPC, MPV, Discord, session)"
+edition = "2021"
+publish = false
+
+# Standalone like linux-gtk: not part of the Tauri workspace.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anivox-core = { path = "../../src-tauri/anivox-core", features = ["net"] }
+discord-rich-presence = "0.2.4"
+reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "time"] }
+url = "2"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

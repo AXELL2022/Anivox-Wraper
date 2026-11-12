@@ -41,6 +41,9 @@
                         Background="Transparent">
                 <TextBlock Text="Anivox" Style="{StaticResource CaptionTextBlockStyle}" VerticalAlignment="Center" />
                 <ProgressRing x:Name="Loading" Width="14" Height="14" IsActive="False" VerticalAlignment="Center" />
+                <!-- Player status from the site scripts (report_player_status), e.g. "MPV ▶". -->
+                <TextBlock x:Name="StatusText" Style="{StaticResource CaptionTextBlockStyle}"
+                           VerticalAlignment="Center" Visibility="Collapsed" />
             </StackPanel>
         </Grid>
 

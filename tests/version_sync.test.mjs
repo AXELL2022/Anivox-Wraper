@@ -22,6 +22,10 @@ const versions = {
   'linux-gtk/Cargo.toml': first('linux-gtk/Cargo.toml', /^version = "([^"]+)"$/m),
   'linux-gtk/Cargo.lock': first('linux-gtk/Cargo.lock', /name = "anivox-gtk"\r?\nversion = "([^"]+)"/),
   'linux-gtk/arch/PKGBUILD': first('linux-gtk/arch/PKGBUILD', /^pkgver=(\S+)$/m),
+  // Experimental WinUI 3 shell and its Rust core (anivox_ffi.dll).
+  'windows-winui/Anivox.WinUI.csproj': first('windows-winui/Anivox.WinUI.csproj', /<Version>([^<]+)<\/Version>/),
+  'windows-winui/native/Cargo.toml': first('windows-winui/native/Cargo.toml', /^version = "([^"]+)"$/m),
+  'windows-winui/native/Cargo.lock': first('windows-winui/native/Cargo.lock', /name = "anivox-ffi"\r?\nversion = "([^"]+)"/),
 };
 
 test('application version is identical in every release file', () => {

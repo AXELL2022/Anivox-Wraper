@@ -1,16 +1,21 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Text.Json.Nodes;
 using System.Threading.Tasks;
+using Microsoft.UI.Dispatching;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Media;
 using Microsoft.Web.WebView2.Core;
+using Windows.Graphics;
 
 namespace Anivox.WinUI;
 
 public sealed partial class MainWindow : Window
 {
-    private static readonly Uri Home = new("https://anivox.fun/");
+    private const string HomeUrl = "https://anivox.fun/";
 
     // Same flags as the Tauri build (src-tauri/src/lib.rs BROWSER_ARGS): NVIDIA RTX VSR / TrueHDR
     // through DirectComposition video overlays and hardware decoding.
@@ -23,8 +28,16 @@ public sealed partial class MainWindow : Window
         "--enable-nv12-dxgi-video --ignore-gpu-blocklist --enable-gpu-rasterization --force-high-performance-gpu";
 
     private readonly IntPtr _hwnd;
+    private readonly AnivoxCore _core = new();
+    private readonly JsonObject _session;
+    private readonly DispatcherQueueTimer _sessionTimer;
+    private readonly DispatcherQueueTimer _statusTimer;
+    private readonly TrayIcon _tray;
     private CoreWebView2Controller? _controller;
-    private Microsoft.UI.Dispatching.DispatcherQueueTimer? _hostFixTimer;
+    private DispatcherQueueTimer? _hostFixTimer;
+    private bool _fullScreen;
+    private bool _exiting;
+
     private CoreWebView2? Core => _controller?.CoreWebView2;
 
     public MainWindow()
@@ -35,12 +48,47 @@ public sealed partial class MainWindow : Window
         ExtendsContentIntoTitleBar = true;
         SetTitleBar(DragRegion);
         AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
-        AppWindow.SetIcon(Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico"));
-        AppWindow.Resize(new Windows.Graphics.SizeInt32(1280, 800));
+        var iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "icon.ico");
+        AppWindow.SetIcon(iconPath);
+        if (AppWindow.Presenter is OverlappedPresenter overlapped)
+        {
+            overlapped.PreferredMinimumWidth = 420;
+            overlapped.PreferredMinimumHeight = 300;
+        }
+
+        _session = _core.LoadSession();
+        RestoreGeometry();
+
+        _sessionTimer = DispatcherQueue.CreateTimer();
+        _sessionTimer.Interval = TimeSpan.FromMilliseconds(600);
+        _sessionTimer.IsRepeating = false;
+        _sessionTimer.Tick += (_, _) => FlushSession();
+        _statusTimer = DispatcherQueue.CreateTimer();
+        _statusTimer.IsRepeating = false;
+        _statusTimer.Tick += (_, _) => StatusText.Visibility = Visibility.Collapsed;
+
+        _tray = new TrayIcon(iconPath, _core.MinimizeToTray);
+        _tray.Toggle += () =>
+        {
+            if (AppWindow.IsVisible)
+            {
+                HideToTray();
+            }
+            else
+            {
+                ShowFromTray();
+            }
+        };
+        _tray.Open += ShowFromTray;
+        _tray.ToggleMinimize += ToggleMinimizeToTray;
+        _tray.Quit += ExitApp;
+
+        _core.UiEvent += value => DispatcherQueue.TryEnqueue(() => OnCoreEvent(value));
 
         ContentHost.SizeChanged += (_, _) => UpdateBounds();
         ContentHost.Loaded += (_, _) => ContentHost.XamlRoot.Changed += (_, _) => UpdateBounds();
         AppWindow.Changed += OnAppWindowChanged;
+        AppWindow.Closing += OnClosing;
         Activated += (_, e) =>
         {
             if (e.WindowActivationState != WindowActivationState.Deactivated)
@@ -48,14 +96,12 @@ public sealed partial class MainWindow : Window
                 _controller?.MoveFocus(CoreWebView2MoveFocusReason.Programmatic);
             }
         };
-        Closed += (_, _) =>
-        {
-            _hostFixTimer?.Stop();
-            _controller?.Close();
-        };
+        Closed += (_, _) => Shutdown();
 
         _ = InitWebViewAsync();
     }
+
+    // ---- WebView2 ----------------------------------------------------------------------------
 
     private async Task InitWebViewAsync()
     {
@@ -83,7 +129,12 @@ public sealed partial class MainWindow : Window
         var core = _controller.CoreWebView2;
         core.Settings.IsStatusBarEnabled = false;
         core.HistoryChanged += (_, _) => UpdateNavButtons();
-        core.NavigationStarting += (_, _) => Loading.IsActive = true;
+        core.SourceChanged += (_, _) => OnSourceChanged();
+        core.NavigationStarting += (_, _) =>
+        {
+            Loading.IsActive = true;
+            _core.BeginLoad();
+        };
         core.NavigationCompleted += (_, _) =>
         {
             Loading.IsActive = false;
@@ -94,19 +145,13 @@ public sealed partial class MainWindow : Window
             Title = string.IsNullOrWhiteSpace(core.DocumentTitle) ? "Anivox" : core.DocumentTitle;
         core.ContainsFullScreenElementChanged += (_, _) => SetFullScreen(core.ContainsFullScreenElement);
         core.NewWindowRequested += OnNewWindowRequested;
+        core.WebMessageReceived += OnWebMessage;
 
-        await core.AddScriptToExecuteOnDocumentCreatedAsync(ReadResource("inject-windows.js"));
+        var startup = _session["startupUrl"]?.GetValue<string>() ?? HomeUrl;
+        await core.AddScriptToExecuteOnDocumentCreatedAsync(AnivoxCore.ContentScript(startup));
 
-        core.Navigate(Home.AbsoluteUri);
+        core.Navigate(startup);
         _controller.MoveFocus(CoreWebView2MoveFocusReason.Programmatic);
-    }
-
-    private static string ReadResource(string name)
-    {
-        using var stream = typeof(MainWindow).Assembly.GetManifestResourceStream(name)
-            ?? throw new InvalidOperationException($"missing resource {name}");
-        using var reader = new StreamReader(stream);
-        return reader.ReadToEnd();
     }
 
     private void UpdateBounds()
@@ -126,30 +171,129 @@ public sealed partial class MainWindow : Window
             Math.Round(ContentHost.ActualHeight * scale));
     }
 
-    private void OnAppWindowChanged(AppWindow sender, AppWindowChangedEventArgs args)
+    private void OnSourceChanged()
     {
-        if (_controller is null)
+        var source = Core?.Source;
+        _core.SetPage(source);
+        if (source is not null && AnivoxCore.IsSiteUrl(source))
+        {
+            _session["lastPage"] = source;
+            ScheduleSessionFlush();
+        }
+    }
+
+    /// <summary>
+    /// <c>window.__TAURI__.core.invoke</c> from <c>ipc-shim.js</c>: only the top document of a
+    /// trusted site origin may call the core, and replies never go to another origin.
+    /// </summary>
+    private void OnWebMessage(CoreWebView2 sender, CoreWebView2WebMessageReceivedEventArgs e)
+    {
+        if (!AnivoxCore.IsSiteUrl(e.Source))
         {
             return;
         }
 
-        if (args.DidPositionChange)
+        JsonObject? message;
+        try
         {
-            _controller.NotifyParentWindowPositionChanged();
+            message = JsonNode.Parse(e.WebMessageAsJson) as JsonObject;
+        }
+        catch (Exception)
+        {
+            return;
         }
 
-        if (args.DidPresenterChange || args.DidSizeChange)
+        var id = message?["id"]?.GetValue<long>();
+        var command = message?["cmd"]?.GetValue<string>();
+        if (id is null || string.IsNullOrEmpty(command))
         {
-            // Stop rendering while minimized, like a regular browser tab.
-            var minimized = sender.Presenter is OverlappedPresenter p && p.State == OverlappedPresenterState.Minimized;
-            _controller.IsVisible = !minimized;
+            return;
+        }
+
+        var args = message!["args"]?.ToJsonString();
+        _core.SetPage(sender.Source);
+        Task.Run(() =>
+        {
+            CoreResult result;
+            try
+            {
+                result = _core.Invoke(command, args);
+            }
+            catch (Exception ex)
+            {
+                result = new CoreResult(false, ex.Message);
+            }
+
+            DispatcherQueue.TryEnqueue(() => Reply(id.Value, result));
+        });
+    }
+
+    private void Reply(long id, CoreResult result)
+    {
+        var core = Core;
+        if (core is null || !AnivoxCore.IsSiteUrl(core.Source))
+        {
+            return;
+        }
+
+        var reply = new JsonObject { ["id"] = id, ["ok"] = result.Ok };
+        if (result.Ok)
+        {
+            reply["value"] = JsonNode.Parse(result.Text);
+        }
+        else
+        {
+            reply["error"] = result.Text;
+        }
+        core.PostWebMessageAsJson(reply.ToJsonString());
+    }
+
+    private void OnCoreEvent(JsonObject value)
+    {
+        switch (value["type"]?.GetValue<string>())
+        {
+            case "fullscreen":
+                SetFullScreen(value["on"]?.GetValue<bool>() == true);
+                break;
+            case "status":
+                ShowStatus(
+                    value["text"]?.GetValue<string>() ?? "",
+                    value["color"]?.GetValue<string>(),
+                    value["resetAfterMs"]?.GetValue<ulong>() ?? 0,
+                    value["detail"]?.GetValue<string>());
+                break;
         }
     }
 
-    private static bool IsSiteHost(Uri uri) =>
-        uri.Host is "anivox.fun" or "anivox.me" ||
-        uri.Host.EndsWith(".anivox.fun", StringComparison.OrdinalIgnoreCase) ||
-        uri.Host.EndsWith(".anivox.me", StringComparison.OrdinalIgnoreCase);
+    private void ShowStatus(string text, string? color, ulong resetAfterMs, string? detail)
+    {
+        _statusTimer.Stop();
+        StatusText.Text = text;
+        StatusText.Visibility = string.IsNullOrEmpty(text) ? Visibility.Collapsed : Visibility.Visible;
+        StatusText.Foreground = ParseColor(color) is { } brush
+            ? brush
+            : (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"];
+        ToolTipService.SetToolTip(StatusText, string.IsNullOrEmpty(detail) ? null : detail);
+        if (resetAfterMs > 0)
+        {
+            _statusTimer.Interval = TimeSpan.FromMilliseconds(resetAfterMs);
+            _statusTimer.Start();
+        }
+    }
+
+    private static SolidColorBrush? ParseColor(string? color)
+    {
+        if (color is null || !color.StartsWith('#') || (color.Length != 7 && color.Length != 4))
+        {
+            return null;
+        }
+        var hex = color.Length == 4
+            ? $"{color[1]}{color[1]}{color[2]}{color[2]}{color[3]}{color[3]}"
+            : color[1..];
+        return uint.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out var rgb)
+            ? new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, (byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb))
+            : null;
+    }
 
     private void OnNewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs e)
     {
@@ -160,7 +304,7 @@ public sealed partial class MainWindow : Window
 
         // Site links stay in this window; sized popups (social sign-in) open as WebView2 windows;
         // other user-initiated links go to the default browser.
-        if (IsSiteHost(uri))
+        if (AnivoxCore.IsSiteUrl(uri.AbsoluteUri))
         {
             e.Handled = true;
             Core?.Navigate(uri.AbsoluteUri);
@@ -174,6 +318,11 @@ public sealed partial class MainWindow : Window
 
     private void SetFullScreen(bool fullScreen)
     {
+        if (_fullScreen == fullScreen)
+        {
+            return;
+        }
+        _fullScreen = fullScreen;
         TitleBar.Visibility = fullScreen ? Visibility.Collapsed : Visibility.Visible;
         AppWindow.SetPresenter(fullScreen ? AppWindowPresenterKind.FullScreen : AppWindowPresenterKind.Default);
     }
@@ -190,5 +339,170 @@ public sealed partial class MainWindow : Window
 
     private void OnReload(object sender, RoutedEventArgs e) => Core?.Reload();
 
-    private void OnHome(object sender, RoutedEventArgs e) => Core?.Navigate(Home.AbsoluteUri);
+    private void OnHome(object sender, RoutedEventArgs e) => Core?.Navigate(HomeUrl);
+
+    // ---- Session -----------------------------------------------------------------------------
+
+    private void RestoreGeometry()
+    {
+        var width = _session["width"]?.GetValue<int>();
+        var height = _session["height"]?.GetValue<int>();
+        var x = _session["x"]?.GetValue<int>();
+        var y = _session["y"]?.GetValue<int>();
+        if (width is int w && height is int h)
+        {
+            var rect = new RectInt32(x ?? 0, y ?? 0, w, h);
+            // Only reuse the position while it is still on a connected display.
+            if (x is not null && y is not null && DisplayArea.GetFromRect(rect, DisplayAreaFallback.None) is not null)
+            {
+                AppWindow.MoveAndResize(rect);
+            }
+            else
+            {
+                AppWindow.Resize(new SizeInt32(w, h));
+            }
+        }
+        else
+        {
+            AppWindow.Resize(new SizeInt32(1280, 800));
+        }
+
+        if (_session["maximized"]?.GetValue<bool>() == true && AppWindow.Presenter is OverlappedPresenter p)
+        {
+            p.Maximize();
+        }
+    }
+
+    private void RecordGeometry()
+    {
+        if (_fullScreen || AppWindow.Presenter is not OverlappedPresenter presenter)
+        {
+            return;
+        }
+
+        switch (presenter.State)
+        {
+            case OverlappedPresenterState.Minimized:
+                return;
+            case OverlappedPresenterState.Maximized:
+                // A maximized window keeps the previous normal size and position.
+                _session["maximized"] = true;
+                break;
+            default:
+                _session["maximized"] = false;
+                _session["x"] = AppWindow.Position.X;
+                _session["y"] = AppWindow.Position.Y;
+                _session["width"] = AppWindow.Size.Width;
+                _session["height"] = AppWindow.Size.Height;
+                break;
+        }
+        ScheduleSessionFlush();
+    }
+
+    private void ScheduleSessionFlush()
+    {
+        _sessionTimer.Stop();
+        _sessionTimer.Start();
+    }
+
+    private void FlushSession()
+    {
+        _sessionTimer.Stop();
+        var data = _session.DeepClone().AsObject();
+        data.Remove("startupUrl");
+        var result = _core.SaveSession(data);
+        if (!result.Ok)
+        {
+            Debug.WriteLine($"Не удалось сохранить сеанс: {result.Text}");
+        }
+    }
+
+    private void OnAppWindowChanged(AppWindow sender, AppWindowChangedEventArgs args)
+    {
+        if (args.DidPositionChange || args.DidSizeChange || args.DidPresenterChange)
+        {
+            RecordGeometry();
+        }
+
+        if (_controller is null)
+        {
+            return;
+        }
+
+        if (args.DidPositionChange)
+        {
+            _controller.NotifyParentWindowPositionChanged();
+        }
+
+        if (args.DidPresenterChange || args.DidSizeChange || args.DidVisibilityChange)
+        {
+            // Stop rendering while minimized or hidden in the tray, like a background tab.
+            var minimized = sender.Presenter is OverlappedPresenter p && p.State == OverlappedPresenterState.Minimized;
+            _controller.IsVisible = sender.IsVisible && !minimized;
+        }
+    }
+
+    // ---- Tray and lifetime -------------------------------------------------------------------
+
+    /// <summary>The close button hides the window to the tray; "Выход" in the tray menu exits.</summary>
+    private void OnClosing(AppWindow sender, AppWindowClosingEventArgs args)
+    {
+        if (!_exiting && _tray.IsShown && _tray.MinimizeToTray)
+        {
+            args.Cancel = true;
+            HideToTray();
+        }
+    }
+
+    private void HideToTray()
+    {
+        FlushSession();
+        if (_fullScreen)
+        {
+            SetFullScreen(false);
+        }
+        AppWindow.Hide();
+    }
+
+    public void ShowFromTray()
+    {
+        AppWindow.Show();
+        if (AppWindow.Presenter is OverlappedPresenter { State: OverlappedPresenterState.Minimized } p)
+        {
+            p.Restore();
+        }
+        Activate();
+        WinActivate.BringToFront(_hwnd);
+    }
+
+    private void ToggleMinimizeToTray()
+    {
+        var enabled = !_tray.MinimizeToTray;
+        var result = _core.SaveMinimizeToTray(enabled);
+        if (result.Ok)
+        {
+            _tray.MinimizeToTray = enabled;
+        }
+        else
+        {
+            Debug.WriteLine($"Не удалось сохранить настройку трея: {result.Text}");
+        }
+    }
+
+    private void ExitApp()
+    {
+        _exiting = true;
+        Close();
+    }
+
+    private void Shutdown()
+    {
+        FlushSession();
+        _hostFixTimer?.Stop();
+        _controller?.Close();
+        _tray.Dispose();
+        // The core is not destroyed: a command may still run on the thread pool, and the
+        // process ends right after. MPV keeps running on purpose (Anivox never ends it).
+        Application.Current.Exit();
+    }
 }

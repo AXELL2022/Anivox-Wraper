@@ -1,35 +1,63 @@
-# Anivox — минимальная сборка WinUI 3 (экспериментально)
+# Anivox — сборка WinUI 3 (экспериментально)
 
-Отдельная нативная оболочка для Windows на WinUI 3 (Windows App SDK 2.6) и WebView2, без Tauri.
-Не входит в `cargo test --workspace` и в CI.
+Отдельная нативная оболочка для Windows на WinUI 3 (C#, .NET 10, Windows App SDK 2.6) и WebView2, без Tauri.
+Логика берётся из общего Rust-ядра `anivox-core` через тонкий C ABI (`native/`, `anivox_ffi.dll`), как в
+GTK-версии: те же команды сайта, те же файлы настроек и истории. Не входит в `cargo test --workspace` и в CI.
 
-Что есть:
+Функции переносятся из Tauri/GTK-версий по этапам.
 
-- окно с Mica и собственной панелью в заголовке: «Назад», «Вперёд», «Обновить», «Главная», индикатор загрузки;
-- WebView2 открывает `https://anivox.fun/`, заголовок окна берётся со страницы;
+Готово:
+
+- окно с Mica и собственной панелью в заголовке: «Назад», «Вперёд», «Обновить», «Главная», индикатор загрузки
+  и строка статуса плеера (`report_player_status`);
+- внедряемые скрипты сайта в том же порядке, что в Tauri-сборке под Windows (`inject-windows.js`,
+  `mpv-session.js`, `inject-common.js`, `player-fullscreen.js`, `common-styles.js`, `site-lifecycle.js`,
+  `segment-monitor.js`), каждый только в верхнем документе `anivox.fun`/`anivox.me`;
+- IPC-мост: `scripts/ipc-shim.js` даёт сайту `window.__TAURI__.core.invoke` поверх `chrome.webview.postMessage`;
+  оболочка принимает сообщения только от `https://anivox.fun`/`https://anivox.me` и не отвечает другой странице.
+  Команды те же, что в GTK-версии: `set_discord_rpc`, `open_in_mpv`, `get_mpv_state`, `get_playback_resume`,
+  `report_player_status`, `content_fullscreen`, `report_segment_stats`, `get_site_document_generation`,
+  `site_document_state`;
+- сеанс в `%APPDATA%\com.yasin.anivox\session-winui.json`: позиция, размер, развёрнутость и последняя страница
+  (без страниц входа и токенов, `session_page::trusted_page`); восстановленная страница не запускает видео до клика
+  (`restore-paused.js`);
+- один экземпляр: повторный запуск показывает и активирует уже открытое окно;
+- значок в трее с меню «Открыть», «Сворачивать в трей», «Выход»; крестик прячет окно в трей, настройка общая с
+  Tauri-версией (`tray.json`);
 - полноэкранный режим плеера переводит окно в fullscreen и прячет панель;
 - ссылки `anivox.fun`/`anivox.me` из новых окон открываются в том же окне, прочие — в браузере по умолчанию,
   всплывающие окна входа через соцсети работают внутри WebView2;
 - те же флаги WebView2 для NVIDIA RTX VSR/TrueHDR, что и в Tauri-сборке (`BROWSER_ARGS` в `src-tauri/src/lib.rs`);
 - для RTX VSR WebView2 встроен как дочерний HWND (`CoreWebView2Controller`, windowed hosting, как в Tauri), а не
   XAML-контролом `WebView2`: тот рисует через композицию WinUI (visual hosting), и видео не попадает в оверлей
-  DirectComposition. В страницу внедряется тот же `src-tauri/scripts/inject-windows.js` со сбросами CSS для оверлея;
+  DirectComposition;
 - на Windows 11 такой WebView2 внутри WinUI не получает клики
   ([microsoft-ui-xaml#10826](https://github.com/microsoft/microsoft-ui-xaml/issues/10826)): окно Chromium
   `Intermediate D3D Window` с `WS_EX_TRANSPARENT` лежит поверх `Chrome_RenderWidgetHostHWND`. `WebViewHostFix.cs`
-  раз в секунду снимает этот стиль и держит окно WebView2 выше окна ввода WinUI (`DesktopChildSiteBridge`);
-- профиль WebView2 хранится в `%LOCALAPPDATA%\com.yasin.anivox.winui\WebView2` (отдельно от Tauri-версии).
+  раз в секунду снимает этот стиль и держит окно WebView2 выше окна ввода WinUI (`DesktopChildSiteBridge`).
 
-Чего нет: MPV, Discord, Shikimori, трей, настройки, обновления, проверка соединения, внедряемые скрипты.
+Дальше: настройки и кнопка MPV, Discord (команды уже работают через ядро, нет только интерфейса), Shikimori,
+проверка соединения, экран восстановления сайта, обновления.
+
+Профиль WebView2 хранится в `%LOCALAPPDATA%\com.yasin.anivox.winui\WebView2` (отдельно от Tauri-версии);
+настройки, история просмотра и журналы MPV — в общих с Tauri-версией каталогах `%APPDATA%\com.yasin.anivox` и
+`%LOCALAPPDATA%\com.yasin.anivox\logs`.
 
 ## Сборка
 
-Нужен .NET 10 SDK (`winget install Microsoft.DotNet.SDK.10`).
+Нужны .NET 10 SDK (`winget install Microsoft.DotNet.SDK.10`) и Rust с целью `x86_64-pc-windows-msvc`.
 
 ```sh
 dotnet build windows-winui/Anivox.WinUI.csproj -c Release
 ```
 
+Сборка сначала запускает `cargo build --locked --release` для `native/` и копирует `anivox_ffi.dll` рядом с exe.
 Результат: `windows-winui/bin/x64/Release/net10.0-windows10.0.19041.0/win-x64/anivox-winui.exe`.
 Сборка unpackaged и self-contained (.NET и Windows App SDK лежат рядом с exe, ~230 МБ), отдельная установка
-рантаймов не нужна. Для ARM64: `-p:Platform=ARM64`.
+рантаймов не нужна. Для ARM64: `-p:Platform=ARM64` (нужна цель Rust `aarch64-pc-windows-msvc`).
+
+Тесты ядра:
+
+```sh
+cargo test --manifest-path windows-winui/native/Cargo.toml
+```
