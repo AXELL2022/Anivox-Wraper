@@ -9,6 +9,7 @@ mod settings;
 mod shikimori;
 mod site_recovery;
 mod tray;
+mod updater;
 mod vblank;
 
 use anivox_core::site_hosts;
@@ -278,6 +279,7 @@ fn build_window(app: &gtk4::Application) {
     }
     let shikimori = shikimori::Shikimori::install(&overlay, &webview, &ipc);
     header.pack_start(&shikimori.button);
+    header.pack_start(&updater::button(&ipc));
     let settings_button = settings::button(
         &window,
         &session,
