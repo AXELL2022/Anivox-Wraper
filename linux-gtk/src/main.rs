@@ -2,6 +2,7 @@
 //! navigation buttons and a WebKitGTK 6.0 view. No Tauri involved; the
 //! platform-independent logic comes from `anivox-core`.
 
+mod connection;
 mod ipc;
 mod session;
 mod settings;
@@ -27,12 +28,13 @@ const IPC_HANDLER: &str = "anivox";
 const APP_DIR: &str = "com.yasin.anivox";
 
 // The same site scripts the Tauri shell injects on Linux, in the same order.
-const SITE_SCRIPTS: [&str; 5] = [
+const SITE_SCRIPTS: [&str; 6] = [
     include_str!("../../src-tauri/scripts/inject-linux.js"),
     include_str!("../../src-tauri/scripts/mpv-session.js"),
     include_str!("../../src-tauri/scripts/inject-common.js"),
     include_str!("../../src-tauri/scripts/player-fullscreen.js"),
     include_str!("../../src-tauri/scripts/common-styles.js"),
+    include_str!("../../src-tauri/scripts/segment-monitor.js"),
 ];
 const IPC_SHIM: &str = include_str!("../scripts/ipc-shim.js");
 
@@ -274,13 +276,16 @@ fn build_window(app: &gtk4::Application) {
     for button in [&back, &forward, &reload, &home] {
         header.pack_start(button);
     }
-    header.pack_end(&settings::button(
+    let settings_button = settings::button(
         &window,
         &session,
         &ipc,
         config_dir.clone(),
         data_dir.join("logs"),
-    ));
+    );
+    header.pack_end(&settings_button);
+    let connection_button = connection::button(&ipc);
+    header.pack_end(&connection_button);
     window.set_titlebar(Some(&header));
 
     back.connect_clicked(glib::clone!(

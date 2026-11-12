@@ -2,6 +2,7 @@
 //! and must be called off the GTK main thread; anything that touches widgets
 //! is sent to the main thread as a [`UiEvent`].
 
+use crate::connection::SegmentStats;
 use anivox_core::discord_presence::{update_discord_presence, DiscordPresence};
 use anivox_core::mpv::{PlaybackMedia, ResumePoint};
 use anivox_core::mpv_session::{self as session, MpvHost, MpvLaunchRequest, MpvState};
@@ -38,6 +39,8 @@ struct Shared {
     /// Current page address; set by the main thread, used for the Referer origin.
     page: Mutex<Option<String>>,
     ui: async_channel::Sender<UiEvent>,
+    /// Latest video segment summary from `segment-monitor.js`.
+    segments: Mutex<Option<SegmentStats>>,
 }
 
 #[derive(Clone)]
@@ -53,6 +56,7 @@ impl GtkHost {
             data_dir,
             page: Mutex::new(None),
             ui,
+            segments: Mutex::new(None),
         }))
     }
 
@@ -143,6 +147,16 @@ impl Ipc {
         &self.host
     }
 
+    /// Runs a future on the background runtime; call off the GTK main thread.
+    pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        self.runtime.block_on(future)
+    }
+
+    /// For the native connection panel.
+    pub fn segment_stats(&self) -> Option<SegmentStats> {
+        self.host.0.segments.lock().ok()?.clone()
+    }
+
     /// Used by the native settings panel only; remote pages have no such command.
     pub fn clear_playback_history(&self) -> Result<(), String> {
         session::clear_playback_history(&self.host)
@@ -180,6 +194,12 @@ impl Ipc {
                     reset_after_ms: status.reset_after_ms,
                     detail: status.detail,
                 });
+                Ok(Value::Null)
+            }
+            "report_segment_stats" => {
+                let stats: SegmentStats =
+                    from_json(args.get("stats").cloned().unwrap_or(Value::Null))?;
+                *self.host.0.segments.lock().map_err(err)? = Some(stats.sanitized());
                 Ok(Value::Null)
             }
             "content_fullscreen" => {
@@ -298,6 +318,23 @@ mod tests {
             .unwrap();
         assert!(matches!(rx.try_recv().unwrap(), UiEvent::Status { .. }));
         assert!(matches!(rx.try_recv().unwrap(), UiEvent::Fullscreen(true)));
+    }
+
+    #[test]
+    fn segment_stats_are_stored_for_the_connection_panel() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ipc, _rx) = ipc(dir.path());
+        assert!(ipc.segment_stats().is_none());
+        assert!(ipc
+            .handle("report_segment_stats", json!({"stats": 1}))
+            .is_err());
+        ipc.handle(
+            "report_segment_stats",
+            json!({"stats": {"host": "cdn", "active": true, "mbps": 12.5, "updatedAt": 5.0}}),
+        )
+        .unwrap();
+        let stats = ipc.segment_stats().unwrap();
+        assert_eq!((stats.host.as_str(), stats.mbps), ("cdn", 12.5));
     }
 
     #[test]
