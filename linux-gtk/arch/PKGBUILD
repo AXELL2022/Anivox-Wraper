@@ -1,7 +1,7 @@
 # Maintainer: axell
 #
 # Experimental native Linux shell (GTK4 + WebKitGTK 6.0). Builds from this
-# checkout instead of a tarball: run `makepkg -f` inside linux-gtk/arch.
+# checkout instead of a tarball: run `makepkg -fi` inside linux-gtk/arch.
 # Installs next to the Tauri `anivox` package without file conflicts.
 pkgname=anivox-gtk
 pkgver=0.4.3
@@ -23,16 +23,31 @@ _root() {
     echo "${startdir}/../.."
 }
 
+# Build from a snapshot in $srcdir: makepkg keeps arch/pkg unreadable during
+# build(), and cargo fails when it rescans the crate directory containing it.
+prepare() {
+    local root tree
+    root="$(_root)"
+    tree="${srcdir}/tree"
+    rm -rf "${tree}"
+    mkdir -p "${tree}/linux-gtk" "${tree}/src-tauri"
+    cp -r "${root}/linux-gtk/"{Cargo.toml,Cargo.lock,build.rs,src,scripts,data} "${tree}/linux-gtk/"
+    cp -r "${root}/src-tauri/"{anivox-core,scripts,icons} "${tree}/src-tauri/"
+}
+
 build() {
-    cd "$(_root)/linux-gtk"
+    cd "${srcdir}/tree/linux-gtk"
     export CARGO_TARGET_DIR="${srcdir}/target"
     export RUSTUP_TOOLCHAIN=stable
+    export RUSTFLAGS="${RUSTFLAGS} --remap-path-prefix=${srcdir}=/usr/src/anivox-gtk"
     cargo build --release --locked
 }
 
 check() {
-    cd "$(_root)/linux-gtk"
+    cd "${srcdir}/tree/linux-gtk"
     export CARGO_TARGET_DIR="${srcdir}/target"
+    export RUSTUP_TOOLCHAIN=stable
+    export RUSTFLAGS="${RUSTFLAGS} --remap-path-prefix=${srcdir}=/usr/src/anivox-gtk"
     cargo test --release --locked
 }
 
