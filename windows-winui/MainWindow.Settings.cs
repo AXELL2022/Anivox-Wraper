@@ -45,8 +45,15 @@ public sealed partial class MainWindow
 
     private void UpdateCaptionInset()
     {
+        // A minimized window reports a negative inset (-8), and GridLength throws on negative
+        // values: the exception in AppWindow.Changed killed the app with "Unknown Hard Error".
+        var inset = AppWindow.TitleBar.RightInset;
+        if (inset < 0)
+        {
+            return;
+        }
         var scale = TitleBar.XamlRoot?.RasterizationScale ?? 1.0;
-        CaptionInset.Width = new GridLength(AppWindow.TitleBar.RightInset / scale);
+        CaptionInset.Width = new GridLength(inset / scale);
     }
 
     private void OnSettingsOpening(object? sender, object e)
