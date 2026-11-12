@@ -193,7 +193,31 @@ fn main() -> glib::ExitCode {
     app.run()
 }
 
+/// WebKit keeps cookies only in memory unless given a file: without this, sign-in
+/// on cookie-based sites (Shikimori, Google, VK) is lost on every restart.
+fn persist_cookies() {
+    let Some(session) = webkit6::NetworkSession::default() else {
+        return;
+    };
+    let directory = session
+        .website_data_manager()
+        .and_then(|manager| manager.base_data_directory())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| glib::user_data_dir().join("anivox-gtk"));
+    if let Err(err) = std::fs::create_dir_all(&directory) {
+        eprintln!("Не удалось создать каталог данных: {err}");
+        return;
+    }
+    if let Some(cookies) = session.cookie_manager() {
+        cookies.set_persistent_storage(
+            &directory.join("cookies.sqlite").to_string_lossy(),
+            webkit6::CookiePersistentStorage::Sqlite,
+        );
+    }
+}
+
 fn build_window(app: &gtk4::Application) {
+    persist_cookies();
     let webview = WebView::new();
     disable_60fps_preference(&webview);
 
