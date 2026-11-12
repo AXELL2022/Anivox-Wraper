@@ -45,6 +45,8 @@ struct Shared {
     /// Latest video segment summary from `segment-monitor.js`.
     segments: Mutex<Option<SegmentStats>>,
     site_load: SharedLoad,
+    /// Page kind shown in Discord while the Shikimori overlay is open.
+    shikimori_activity: Mutex<Option<String>>,
 }
 
 #[derive(Clone)]
@@ -62,6 +64,7 @@ impl GtkHost {
             ui,
             segments: Mutex::new(None),
             site_load: SharedLoad::default(),
+            shikimori_activity: Mutex::new(None),
         }))
     }
 
@@ -178,6 +181,47 @@ impl Ipc {
         self.host.0.segments.lock().ok()?.clone()
     }
 
+    /// While the Shikimori overlay is open and MPV is not playing, Discord shows
+    /// the kind of Shikimori page instead of the embedded player; `None`
+    /// restores the embedded player's last status.
+    pub fn set_shikimori_activity(&self, activity: Option<String>) -> Result<(), String> {
+        {
+            let mut current = self.host.0.shikimori_activity.lock().map_err(err)?;
+            if *current == activity {
+                return Ok(());
+            }
+            current.clone_from(&activity);
+        }
+        let mut client = self.host.discord().lock().map_err(err)?;
+        if self.mpv_owns_discord()? {
+            return Ok(());
+        }
+        let presence = match activity {
+            Some(text) => DiscordPresence {
+                details: "Shikimori".into(),
+                state_text: text,
+                ..DiscordPresence::default()
+            },
+            None => {
+                let mut presence = self.host.mpv().embedded.lock().map_err(err)?.clone();
+                self.host.shikimori().decorate(&mut presence);
+                presence
+            }
+        };
+        update_discord_presence(&mut client, &presence)
+    }
+
+    fn mpv_owns_discord(&self) -> Result<bool, String> {
+        Ok(self
+            .host
+            .mpv()
+            .current
+            .lock()
+            .map_err(err)?
+            .as_ref()
+            .is_some_and(|session| session.playback.ready))
+    }
+
     /// Used by the native settings panel only; remote pages have no such command.
     pub fn clear_playback_history(&self) -> Result<(), String> {
         session::clear_playback_history(&self.host)
@@ -260,12 +304,14 @@ impl Ipc {
         // The embedded player keeps its last status; an active MPV session owns Discord.
         let mpv = self.host.mpv();
         *mpv.embedded.lock().map_err(err)? = presence.clone();
-        if mpv
-            .current
-            .lock()
-            .map_err(err)?
-            .as_ref()
-            .is_some_and(|session| session.playback.ready)
+        if self.mpv_owns_discord()?
+            || self
+                .host
+                .0
+                .shikimori_activity
+                .lock()
+                .map_err(err)?
+                .is_some()
         {
             return Ok(Value::Null);
         }
@@ -407,6 +453,22 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(rx.try_recv().unwrap(), UiEvent::SiteReady(1)));
+    }
+
+    #[test]
+    fn shikimori_activity_is_remembered_and_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ipc, _rx) = ipc(dir.path());
+        std::env::set_var("XDG_RUNTIME_DIR", dir.path());
+        // No Discord here: the send fails, but the overlay state is kept.
+        let _ = ipc.set_shikimori_activity(Some("Листает Shikimori".into()));
+        assert!(ipc.host().0.shikimori_activity.lock().unwrap().is_some());
+        // The embedded player keeps its status but does not override Shikimori.
+        let args = json!({"presence": {"details": "Аниме", "stateText": "Серия 1"}});
+        ipc.handle("set_discord_rpc", args).unwrap();
+        assert_eq!(ipc.host().mpv().embedded.lock().unwrap().details, "Аниме");
+        let _ = ipc.set_shikimori_activity(None);
+        assert!(ipc.host().0.shikimori_activity.lock().unwrap().is_none());
     }
 
     #[test]

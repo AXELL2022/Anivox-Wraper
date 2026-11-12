@@ -6,6 +6,7 @@ mod connection;
 mod ipc;
 mod session;
 mod settings;
+mod shikimori;
 mod site_recovery;
 mod tray;
 mod vblank;
@@ -57,6 +58,8 @@ struct Shell {
     status: gtk4::Label,
     status_generation: Cell<u64>,
     recovery: Rc<site_recovery::Recovery>,
+    // Owns the overlay state; the toolbar button holds only a weak reference.
+    _shikimori: Rc<shikimori::Shikimori>,
 }
 
 impl Shell {
@@ -273,6 +276,8 @@ fn build_window(app: &gtk4::Application) {
     for button in [&back, &forward, &reload, &home] {
         header.pack_start(button);
     }
+    let shikimori = shikimori::Shikimori::install(&overlay, &webview, &ipc);
+    header.pack_start(&shikimori.button);
     let settings_button = settings::button(
         &window,
         &session,
@@ -293,6 +298,7 @@ fn build_window(app: &gtk4::Application) {
         status,
         status_generation: Cell::new(0),
         recovery,
+        _shikimori: shikimori,
     });
     glib::spawn_future_local(async move {
         while let Ok(event) = ui_rx.recv().await {
