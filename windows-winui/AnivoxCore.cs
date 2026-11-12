@@ -62,6 +62,18 @@ internal sealed class AnivoxCore : IDisposable
     private static extern int anivox_tray_save(IntPtr anivox, int enabled, out IntPtr result);
 
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int anivox_settings_load(IntPtr anivox, out IntPtr result);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int anivox_settings_save(
+        IntPtr anivox,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string settingsJson,
+        out IntPtr result);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int anivox_clear_history(IntPtr anivox, out IntPtr result);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
     private static extern int anivox_content_script(
         [MarshalAs(UnmanagedType.LPUTF8Str)] string startupUrl,
         out IntPtr result);
@@ -152,6 +164,32 @@ internal sealed class AnivoxCore : IDisposable
         var code = anivox_tray_save(_handle, enabled ? 1 : 0, out var result);
         return new CoreResult(code == 0, Take(result));
     }
+
+    /// <summary>
+    /// Player settings (<c>settings.json</c>): only the native settings panel calls these; the site
+    /// has no command to change the MPV path or clear history.
+    /// </summary>
+    public CoreResult LoadPlayerSettings()
+    {
+        var code = anivox_settings_load(_handle, out var result);
+        return new CoreResult(code == 0, Take(result));
+    }
+
+    public CoreResult SavePlayerSettings(string? mpvPath, bool mirrorEmbedded)
+    {
+        var json = new JsonObject { ["mpvPath"] = mpvPath, ["mirrorEmbedded"] = mirrorEmbedded };
+        var code = anivox_settings_save(_handle, json.ToJsonString(), out var result);
+        return new CoreResult(code == 0, Take(result));
+    }
+
+    /// <summary>Deletes saved playback positions. Blocking: takes the history lock.</summary>
+    public CoreResult ClearPlaybackHistory()
+    {
+        var code = anivox_clear_history(_handle, out var result);
+        return new CoreResult(code == 0, Take(result));
+    }
+
+    public static string LogsDir => Path.Combine(DataDir, "logs");
 
     public static string ContentScript(string startupUrl)
     {

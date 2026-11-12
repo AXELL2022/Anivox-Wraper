@@ -31,7 +31,6 @@ public sealed partial class MainWindow : Window
     private readonly AnivoxCore _core = new();
     private readonly JsonObject _session;
     private readonly DispatcherQueueTimer _sessionTimer;
-    private readonly DispatcherQueueTimer _statusTimer;
     private readonly TrayIcon _tray;
     private CoreWebView2Controller? _controller;
     private DispatcherQueueTimer? _hostFixTimer;
@@ -63,9 +62,8 @@ public sealed partial class MainWindow : Window
         _sessionTimer.Interval = TimeSpan.FromMilliseconds(600);
         _sessionTimer.IsRepeating = false;
         _sessionTimer.Tick += (_, _) => FlushSession();
-        _statusTimer = DispatcherQueue.CreateTimer();
-        _statusTimer.IsRepeating = false;
-        _statusTimer.Tick += (_, _) => StatusText.Visibility = Visibility.Collapsed;
+        InitPlayer();
+        InitSettings();
 
         _tray = new TrayIcon(iconPath, _core.MinimizeToTray);
         _tray.Toggle += () =>
@@ -256,43 +254,13 @@ public sealed partial class MainWindow : Window
                 SetFullScreen(value["on"]?.GetValue<bool>() == true);
                 break;
             case "status":
-                ShowStatus(
+                ShowPlayerStatus(
                     value["text"]?.GetValue<string>() ?? "",
                     value["color"]?.GetValue<string>(),
                     value["resetAfterMs"]?.GetValue<ulong>() ?? 0,
                     value["detail"]?.GetValue<string>());
                 break;
         }
-    }
-
-    private void ShowStatus(string text, string? color, ulong resetAfterMs, string? detail)
-    {
-        _statusTimer.Stop();
-        StatusText.Text = text;
-        StatusText.Visibility = string.IsNullOrEmpty(text) ? Visibility.Collapsed : Visibility.Visible;
-        StatusText.Foreground = ParseColor(color) is { } brush
-            ? brush
-            : (Brush)Application.Current.Resources["TextFillColorSecondaryBrush"];
-        ToolTipService.SetToolTip(StatusText, string.IsNullOrEmpty(detail) ? null : detail);
-        if (resetAfterMs > 0)
-        {
-            _statusTimer.Interval = TimeSpan.FromMilliseconds(resetAfterMs);
-            _statusTimer.Start();
-        }
-    }
-
-    private static SolidColorBrush? ParseColor(string? color)
-    {
-        if (color is null || !color.StartsWith('#') || (color.Length != 7 && color.Length != 4))
-        {
-            return null;
-        }
-        var hex = color.Length == 4
-            ? $"{color[1]}{color[1]}{color[2]}{color[2]}{color[3]}{color[3]}"
-            : color[1..];
-        return uint.TryParse(hex, System.Globalization.NumberStyles.HexNumber, null, out var rgb)
-            ? new SolidColorBrush(Microsoft.UI.ColorHelper.FromArgb(255, (byte)(rgb >> 16), (byte)(rgb >> 8), (byte)rgb))
-            : null;
     }
 
     private void OnNewWindowRequested(object? sender, CoreWebView2NewWindowRequestedEventArgs e)
@@ -405,7 +373,7 @@ public sealed partial class MainWindow : Window
         _sessionTimer.Start();
     }
 
-    private void FlushSession()
+    private CoreResult FlushSession()
     {
         _sessionTimer.Stop();
         var data = _session.DeepClone().AsObject();
@@ -415,6 +383,7 @@ public sealed partial class MainWindow : Window
         {
             Debug.WriteLine($"Не удалось сохранить сеанс: {result.Text}");
         }
+        return result;
     }
 
     private void OnAppWindowChanged(AppWindow sender, AppWindowChangedEventArgs args)

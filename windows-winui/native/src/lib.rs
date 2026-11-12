@@ -11,6 +11,7 @@ pub mod segments;
 pub mod session;
 pub mod site_load;
 
+use anivox_core::player_settings::{load_player_settings, save_player_settings, PlayerSettings};
 use anivox_core::site_hosts;
 use serde_json::Value;
 use std::ffi::{c_char, c_void, CStr, CString};
@@ -44,6 +45,10 @@ impl Anivox {
 
     fn tray_path(&self) -> PathBuf {
         self.ipc.host().config_dir().join("tray.json")
+    }
+
+    fn settings_path(&self) -> PathBuf {
+        self.ipc.host().config_dir().join("settings.json")
     }
 }
 
@@ -244,6 +249,43 @@ pub extern "C" fn anivox_tray_save(
     })
 }
 
+/// Player settings (`settings.json`, shared with the Tauri build). For the
+/// native settings panel only: remote pages have no command for this.
+#[no_mangle]
+pub extern "C" fn anivox_settings_load(anivox: *const Anivox, out: *mut *mut c_char) -> i32 {
+    guarded(out, || {
+        let anivox = handle(anivox)?;
+        let settings = load_player_settings(&anivox.settings_path())?;
+        serde_json::to_value(settings).map_err(|err| err.to_string())
+    })
+}
+
+/// Saves player settings atomically; the MPV path must be an existing absolute file.
+#[no_mangle]
+pub extern "C" fn anivox_settings_save(
+    anivox: *const Anivox,
+    settings_json: *const c_char,
+    out: *mut *mut c_char,
+) -> i32 {
+    guarded(out, || {
+        let anivox = handle(anivox)?;
+        let settings: PlayerSettings =
+            serde_json::from_str(read_str(settings_json).ok_or("Нет настроек")?)
+                .map_err(|err| err.to_string())?;
+        save_player_settings(&anivox.settings_path(), &settings)?;
+        Ok(Value::Null)
+    })
+}
+
+/// Deletes saved playback positions (native settings panel only).
+#[no_mangle]
+pub extern "C" fn anivox_clear_history(anivox: *const Anivox, out: *mut *mut c_char) -> i32 {
+    guarded(out, || {
+        handle(anivox)?.ipc.clear_playback_history()?;
+        Ok(Value::Null)
+    })
+}
+
 /// Document-created script for the content webview (`startup_url` decides
 /// whether the restored page starts paused).
 #[no_mangle]
@@ -296,6 +338,36 @@ mod tests {
         anivox_free(out);
         assert_eq!(anivox_begin_load(anivox), 1);
         assert_eq!(anivox_tray_load(anivox), 1);
+        anivox_destroy(anivox);
+    }
+
+    #[test]
+    fn settings_round_trip_and_path_validation() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = CString::new(dir.path().join("c").to_string_lossy().as_ref()).unwrap();
+        let data = CString::new(dir.path().join("d").to_string_lossy().as_ref()).unwrap();
+        let anivox = anivox_create(config.as_ptr(), data.as_ptr(), ignore, std::ptr::null_mut());
+        let text = |out: *mut c_char| {
+            let value = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_owned();
+            anivox_free(out);
+            value
+        };
+        let mut out = std::ptr::null_mut();
+        assert_eq!(anivox_settings_load(anivox, &mut out), 0);
+        assert_eq!(text(out), r#"{"mirrorEmbedded":false,"mpvPath":null}"#);
+
+        let missing = CString::new(r#"{"mpvPath":"C:\\nope\\mpv.exe"}"#).unwrap();
+        assert_eq!(anivox_settings_save(anivox, missing.as_ptr(), &mut out), 1);
+        assert!(text(out).contains("MPV"));
+
+        let ok = CString::new(r#"{"mpvPath":"  ","mirrorEmbedded":true}"#).unwrap();
+        assert_eq!(anivox_settings_save(anivox, ok.as_ptr(), &mut out), 0);
+        anivox_free(out);
+        assert_eq!(anivox_settings_load(anivox, &mut out), 0);
+        assert_eq!(text(out), r#"{"mirrorEmbedded":true,"mpvPath":null}"#);
+
+        assert_eq!(anivox_clear_history(anivox, &mut out), 0);
+        anivox_free(out);
         anivox_destroy(anivox);
     }
 

@@ -14,36 +14,122 @@
             <RowDefinition Height="*" />
         </Grid.RowDefinitions>
 
+        <!-- Height must match TitleBarHeightOption.Tall (48), or the caption input window overlaps the site. -->
         <Grid x:Name="TitleBar" Height="48" Padding="4,0,0,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto" />
                 <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="Auto" />
+                <ColumnDefinition x:Name="CaptionInset" Width="0" />
             </Grid.ColumnDefinitions>
             <StackPanel x:Name="NavButtons" Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
-                <Button x:Name="BackButton" Click="OnBack" IsEnabled="False" ToolTipService.ToolTip="Назад"
+                <Button x:Name="BackButton" Click="OnBack" AutomationProperties.Name="Назад" IsEnabled="False" ToolTipService.ToolTip="Назад"
                         Style="{StaticResource SubtleButtonStyle}" Padding="8,6">
                     <FontIcon Glyph="&#xE72B;" FontSize="14" />
                 </Button>
-                <Button x:Name="ForwardButton" Click="OnForward" IsEnabled="False" ToolTipService.ToolTip="Вперёд"
+                <Button x:Name="ForwardButton" Click="OnForward" AutomationProperties.Name="Вперёд" IsEnabled="False" ToolTipService.ToolTip="Вперёд"
                         Style="{StaticResource SubtleButtonStyle}" Padding="8,6">
                     <FontIcon Glyph="&#xE72A;" FontSize="14" />
                 </Button>
-                <Button x:Name="ReloadButton" Click="OnReload" ToolTipService.ToolTip="Обновить"
+                <Button x:Name="ReloadButton" Click="OnReload" AutomationProperties.Name="Обновить" ToolTipService.ToolTip="Обновить"
                         Style="{StaticResource SubtleButtonStyle}" Padding="8,6">
                     <FontIcon Glyph="&#xE72C;" FontSize="14" />
                 </Button>
-                <Button Click="OnHome" ToolTipService.ToolTip="Главная"
+                <Button Click="OnHome" ToolTipService.ToolTip="Главная" AutomationProperties.Name="Главная"
                         Style="{StaticResource SubtleButtonStyle}" Padding="8,6">
                     <FontIcon Glyph="&#xE80F;" FontSize="14" />
+                </Button>
+                <!-- Hands the current episode to MPV; shows the player status from the site (report_player_status). -->
+                <Button x:Name="MpvButton" Click="OnMpv" AutomationProperties.Name="Открыть в MPV" ToolTipService.ToolTip="Открыть текущее видео в MPV (M / Ь)"
+                        Style="{StaticResource SubtleButtonStyle}" Padding="10,6" Margin="6,0,0,0">
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <FontIcon Glyph="&#xE768;" FontSize="13" />
+                        <TextBlock x:Name="MpvLabel" Text="MPV" />
+                    </StackPanel>
                 </Button>
             </StackPanel>
             <StackPanel x:Name="DragRegion" Grid.Column="1" Orientation="Horizontal" Spacing="8" Padding="12,0,0,0"
                         Background="Transparent">
                 <TextBlock Text="Anivox" Style="{StaticResource CaptionTextBlockStyle}" VerticalAlignment="Center" />
                 <ProgressRing x:Name="Loading" Width="14" Height="14" IsActive="False" VerticalAlignment="Center" />
-                <!-- Player status from the site scripts (report_player_status), e.g. "MPV ▶". -->
-                <TextBlock x:Name="StatusText" Style="{StaticResource CaptionTextBlockStyle}"
-                           VerticalAlignment="Center" Visibility="Collapsed" />
+                <!-- Longer player explanations (status detail, launch timeout). -->
+                <TextBlock x:Name="PlayerMessage" Style="{StaticResource CaptionTextBlockStyle}"
+                           Foreground="{ThemeResource SystemFillColorCriticalBrush}" TextTrimming="CharacterEllipsis"
+                           MaxWidth="420" VerticalAlignment="Center" Visibility="Collapsed" />
+            </StackPanel>
+            <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center" Margin="0,0,4,0">
+                <TextBlock x:Name="VersionText" Style="{StaticResource CaptionTextBlockStyle}" VerticalAlignment="Center"
+                           Foreground="{ThemeResource TextFillColorTertiaryBrush}" ToolTipService.ToolTip="Версия Anivox" />
+                <Button x:Name="SettingsButton" ToolTipService.ToolTip="Настройки Anivox" AutomationProperties.Name="Настройки Anivox"
+                        Style="{StaticResource SubtleButtonStyle}" Padding="8,6">
+                    <FontIcon Glyph="&#xE713;" FontSize="14" />
+                    <Button.Flyout>
+                        <!-- Not constrained to the root: the popup gets its own window above the site HWND. -->
+                        <Flyout x:Name="SettingsFlyout" Placement="BottomEdgeAlignedRight"
+                                ShouldConstrainToRootBounds="False" Opening="OnSettingsOpening">
+                            <StackPanel Width="380" Spacing="8">
+                                <TextBlock Text="Настройки Anivox" Style="{StaticResource SubtitleTextBlockStyle}" />
+
+                                <TextBlock Text="Приложение" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                <Grid ColumnSpacing="8">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Text="При запуске открывать" VerticalAlignment="Center" TextWrapping="Wrap" />
+                                    <ComboBox x:Name="StartupPage" Grid.Column="1" SelectionChanged="OnStartupPageChanged">
+                                        <ComboBoxItem Content="Последнюю страницу Anivox" Tag="lastPage" />
+                                        <ComboBoxItem Content="Главную страницу" Tag="home" />
+                                    </ComboBox>
+                                </Grid>
+                                <TextBlock Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           Text="Размер, положение и развёрнутое состояние окна сохраняются автоматически. Восстановленная страница не запускает видео до взаимодействия с ней." />
+                                <TextBlock x:Name="SessionStatus" Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap" />
+
+                                <MenuFlyoutSeparator />
+                                <TextBlock Text="MPV" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                <TextBlock Text="Путь к исполняемому файлу MPV" />
+                                <Grid ColumnSpacing="6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBox x:Name="MpvPath" PlaceholderText="mpv из PATH" TextChanged="OnSettingsEdited" />
+                                    <Button Grid.Column="1" Content="Обзор…" Click="OnBrowseMpv" />
+                                </Grid>
+                                <TextBlock Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           Text="Оставьте поле пустым для поиска MPV в PATH. Выбранный путь используется при следующем запуске видео." />
+                                <CheckBox x:Name="MirrorEmbedded" Click="OnSettingsEdited">
+                                    <TextBlock Text="Продолжать воспроизведение на сайте при просмотре в MPV" TextWrapping="Wrap" />
+                                </CheckBox>
+                                <TextBlock Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           Text="После запуска MPV встроенный плеер работает без звука на минимальном качестве и следует его паузе и позиции. Расход трафика и нагрузка увеличатся." />
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <Button Content="Сохранить" Style="{StaticResource AccentButtonStyle}" Click="OnSaveSettings" />
+                                    <Button Content="Сбросить путь" Click="OnResetMpvPath" />
+                                </StackPanel>
+                                <Button x:Name="ClearHistoryButton" Content="Очистить сохранённые позиции" Click="OnClearHistory" />
+
+                                <TextBlock Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           Text="Журналы MPV сохраняются в папку данных Anivox:" />
+                                <Grid ColumnSpacing="6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock x:Name="LogsPath" Style="{StaticResource CaptionTextBlockStyle}"
+                                               TextWrapping="Wrap" IsTextSelectionEnabled="True" VerticalAlignment="Center" />
+                                    <HyperlinkButton Grid.Column="1" Content="Открыть" Click="OnOpenLogs" />
+                                </Grid>
+                                <TextBlock x:Name="SettingsStatus" TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Flyout>
+                    </Button.Flyout>
+                </Button>
             </StackPanel>
         </Grid>
 
