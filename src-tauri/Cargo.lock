@@ -45,6 +45,7 @@ dependencies = [
 name = "anivox"
 version = "0.4.3"
 dependencies = [
+ "anivox-core",
  "discord-rich-presence",
  "gtk",
  "reqwest",
@@ -60,6 +61,20 @@ dependencies = [
  "tempfile",
  "tokio",
  "windows 0.62.2",
+]
+
+[[package]]
+name = "anivox-core"
+version = "0.4.3"
+dependencies = [
+ "discord-rich-presence",
+ "reqwest",
+ "rustls",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "url",
 ]
 
 [[package]]

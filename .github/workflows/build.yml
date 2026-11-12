@@ -115,13 +115,13 @@ jobs:
         run: node --test tests/*.test.mjs
 
       - name: Run Rust tests
-        run: cargo test --locked --manifest-path src-tauri/Cargo.toml
+        run: cargo test --locked --workspace --manifest-path src-tauri/Cargo.toml
 
       - name: Check Rust formatting
-        run: cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+        run: cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
 
       - name: Check Rust compilation
-        run: cargo check --locked --manifest-path src-tauri/Cargo.toml
+        run: cargo check --locked --workspace --manifest-path src-tauri/Cargo.toml
 
       # Windows ships only the NSIS setup.exe and the MSI (see bundle.targets).
       - name: Build Tauri application (Windows installers)

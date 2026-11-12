@@ -9,6 +9,8 @@ Anivox is a Tauri v2 desktop wrapper for `https://anivox.fun/`, with a Rust back
 ## Source map
 
 - `src-tauri/src/lib.rs`: application setup, native window with separate `toolbar` and `content` webviews, window/Shikimori overlay IPC commands and initialization script assembly via `concat!` and `include_str!`.
+- `src-tauri/anivox-core/`: platform-independent crate without Tauri types (workspace member): `site_hosts`, `discord_presence`, `shikimori` (title ids, rating line, status decoration), `player_settings`, `tray_settings`, `mpv` (launch args, IPC protocol, playback state, resume history; feature `net`), `mpv_session` (launch/track/resume via the `MpvHost` trait that each shell implements; feature `net`). The shell modules in `src-tauri/src/` re-export these items and keep only Tauri glue (commands, paths, state). Put new logic that needs no window/webview here; run `cargo test --workspace`.
+- `linux-gtk/`: experimental standalone GTK4 + WebKitGTK 6.0 shell (own `[workspace]`, not built by `cargo test --workspace`; build it on Linux with `cargo build --manifest-path linux-gtk/Cargo.toml`). Reuses `anivox-core` and the Linux site scripts through a small `window.__TAURI__.core.invoke` shim (`scripts/ipc-shim.js`); implements `set_discord_rpc`, `open_in_mpv`, `get_mpv_state`, `get_playback_resume`, `report_player_status`, `content_fullscreen` only. Shares `settings.json` and playback history with the Tauri build (`com.yasin.anivox`).
 - `src-tauri/src/main.rs`: minimal entry point calling `anivox_lib::run()`; preserves the Windows release console suppression attribute.
 - `src-tauri/src/` modules: `discord.rs` (Rich Presence and the Shikimori rating line), `mpv.rs` (MPV launch, IPC tracking and playback history), `player_settings.rs` (`settings.json` and the settings commands), `updater.rs` (update check/install commands), `session.rs` (window geometry and last-page persistence; read its module doc for the required call order around window creation, tray hiding and exit), `site_recovery.rs` (native loading watchdog; a timeout is not proof of network failure), `tray_settings.rs` (close-to-tray state), `local_overlay.rs` (local dropdown panels). Rust tests live in `*_tests.rs` files next to `lib.rs` and in inline `#[cfg(test)]` modules.
 - `src-tauri/scripts/`: remote webview injection scripts: `inject-common.js` (MPV media hooks and Discord presence), `player-fullscreen.js` (native fullscreen sync and double-click toggle), `common-styles.js` (scroll/backdrop CSS), `inject-windows.js` (RTX VSR DirectComposition CSS), `inject-linux.js` (WebKitGTK buffer/pacer workarounds), `mpv-session.js` (same-episode embedded mirroring driven by native MPV snapshots; loaded before `inject-common.js` on all platforms), `restore-paused.js`, `site-lifecycle.js`, `segment-monitor.js`, and `shikimori.js` (Shikimori webview only).
@@ -33,9 +35,9 @@ bun run build
 bun run build:arch
 bun run install:arch
 bun run tauri info
-cargo check --locked --manifest-path src-tauri/Cargo.toml          # CI uses --locked
+cargo check --locked --workspace --manifest-path src-tauri/Cargo.toml  # CI uses --locked
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check           # CI fails on formatting
-cargo test --manifest-path src-tauri/Cargo.toml
+cargo test --workspace --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml mpv_tests           # Rust tests filtered by module/name
 node --test tests/*.test.mjs                                        # all JS tests
 node --test tests/settings.test.mjs                                 # one test file

@@ -1,0 +1,54 @@
+# Maintainer: axell
+#
+# Experimental native Linux shell (GTK4 + WebKitGTK 6.0). Builds from this
+# checkout instead of a tarball: run `makepkg -f` inside linux-gtk/arch.
+# Installs next to the Tauri `anivox` package without file conflicts.
+pkgname=anivox-gtk
+pkgver=0.4.3
+pkgrel=1
+pkgdesc="Anivox Desktop - native GTK4 + WebKitGTK shell for anivox.fun (experimental)"
+arch=('x86_64')
+url="https://anivox.fun/"
+license=('unknown')
+depends=('gtk4' 'webkitgtk-6.0')
+makedepends=('cargo' 'pkgconf')
+optdepends=(
+    'mpv: external player support'
+)
+# ring and other C code in the dependency tree break under makepkg's default -flto.
+options=('!debug' '!lto')
+
+_root() {
+    # linux-gtk/arch -> repository root
+    echo "${startdir}/../.."
+}
+
+build() {
+    cd "$(_root)/linux-gtk"
+    export CARGO_TARGET_DIR="${srcdir}/target"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo build --release --locked
+}
+
+check() {
+    cd "$(_root)/linux-gtk"
+    export CARGO_TARGET_DIR="${srcdir}/target"
+    cargo test --release --locked
+}
+
+package() {
+    local root
+    root="$(_root)"
+
+    install -Dm755 "${srcdir}/target/release/anivox-gtk" "${pkgdir}/usr/bin/anivox-gtk"
+
+    # The desktop file name equals the GApplication id so shells match the window to it.
+    install -Dm644 "${root}/linux-gtk/data/com.yasin.anivox.gtk.desktop" \
+        "${pkgdir}/usr/share/applications/com.yasin.anivox.gtk.desktop"
+
+    local icons="${root}/src-tauri/icons"
+    install -Dm644 "${icons}/32x32.png" "${pkgdir}/usr/share/icons/hicolor/32x32/apps/anivox-gtk.png"
+    install -Dm644 "${icons}/128x128.png" "${pkgdir}/usr/share/icons/hicolor/128x128/apps/anivox-gtk.png"
+    install -Dm644 "${icons}/128x128@2x.png" "${pkgdir}/usr/share/icons/hicolor/256x256/apps/anivox-gtk.png"
+    install -Dm644 "${icons}/icon.png" "${pkgdir}/usr/share/icons/hicolor/512x512/apps/anivox-gtk.png"
+}

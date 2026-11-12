@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Anivox (GTK)
+Comment=Anivox Desktop - native GTK4 + WebKitGTK shell for anivox.fun
+Exec=anivox-gtk
+Icon=anivox-gtk
+Terminal=false
+Type=Application
+Categories=AudioVideo;Player;Network;
+StartupWMClass=com.yasin.anivox.gtk

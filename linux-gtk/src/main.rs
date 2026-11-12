@@ -1,0 +1,334 @@
+//! Minimal native Linux shell for Anivox: GTK4 window, header bar with
+//! navigation buttons and a WebKitGTK 6.0 view. No Tauri involved; the
+//! platform-independent logic comes from `anivox-core`.
+
+mod ipc;
+mod vblank;
+
+use anivox_core::site_hosts;
+use gtk4::prelude::*;
+use gtk4::{gio, glib};
+use std::cell::Cell;
+use std::rc::Rc;
+use std::sync::Arc;
+use url::Url;
+use webkit6::prelude::*;
+use webkit6::{
+    NavigationPolicyDecision, NavigationType, PolicyDecisionType, UserContentInjectedFrames,
+    UserScript, UserScriptInjectionTime, WebView,
+};
+
+const APP_ID: &str = "com.yasin.anivox.gtk";
+const IPC_HANDLER: &str = "anivox";
+/// Same identifier as the Tauri build, so both shells share settings and history.
+const APP_DIR: &str = "com.yasin.anivox";
+
+// The same site scripts the Tauri shell injects on Linux, in the same order.
+const SITE_SCRIPTS: [&str; 5] = [
+    include_str!("../../src-tauri/scripts/inject-linux.js"),
+    include_str!("../../src-tauri/scripts/mpv-session.js"),
+    include_str!("../../src-tauri/scripts/inject-common.js"),
+    include_str!("../../src-tauri/scripts/player-fullscreen.js"),
+    include_str!("../../src-tauri/scripts/common-styles.js"),
+];
+const IPC_SHIM: &str = include_str!("../scripts/ipc-shim.js");
+
+/// Page-provided colors go into Pango markup: accept only `#rgb`/`#rrggbb[aa]`.
+fn safe_color(value: &str) -> &str {
+    let hex = value.strip_prefix('#').unwrap_or("");
+    if matches!(hex.len(), 3 | 6 | 8) && hex.bytes().all(|c| c.is_ascii_hexdigit()) {
+        value
+    } else {
+        "#cccccc"
+    }
+}
+
+/// Applies requests from the IPC worker threads to the widgets.
+fn handle_ui_event(
+    event: ipc::UiEvent,
+    window: &gtk4::ApplicationWindow,
+    header: &gtk4::HeaderBar,
+    status: &gtk4::Label,
+    generation: &Rc<Cell<u64>>,
+) {
+    match event {
+        ipc::UiEvent::Fullscreen(on) => {
+            window.set_fullscreened(on);
+            header.set_visible(!on);
+        }
+        ipc::UiEvent::Status {
+            text,
+            color,
+            reset_after_ms,
+            detail,
+        } => {
+            let markup = format!(
+                "<span foreground=\"{}\">{}</span>",
+                safe_color(&color),
+                glib::markup_escape_text(&text)
+            );
+            status.set_markup(&markup);
+            status.set_tooltip_text(detail.as_deref());
+            status.set_visible(true);
+            let mine = generation.get() + 1;
+            generation.set(mine);
+            if reset_after_ms > 0 {
+                let status = status.clone();
+                let generation = generation.clone();
+                glib::timeout_add_local_once(
+                    std::time::Duration::from_millis(reset_after_ms),
+                    move || {
+                        if generation.get() == mine {
+                            status.set_visible(false);
+                        }
+                    },
+                );
+            }
+        }
+    }
+}
+
+/// Installs `window.__TAURI__.core.invoke` for trusted site pages and answers
+/// it from [`ipc::Ipc`]. Commands run off the GTK main thread.
+fn setup_ipc(webview: &WebView, window: &gtk4::ApplicationWindow, header: &gtk4::HeaderBar) {
+    let Some(manager) = webview.user_content_manager() else {
+        return;
+    };
+    let (tx, rx) = async_channel::unbounded();
+    let host = ipc::GtkHost::new(
+        tx,
+        glib::user_config_dir().join(APP_DIR),
+        glib::user_data_dir().join(APP_DIR),
+    );
+    let ipc = match ipc::Ipc::new(host) {
+        Ok(ipc) => Arc::new(ipc),
+        Err(err) => {
+            eprintln!("IPC недоступен: {err}");
+            return;
+        }
+    };
+
+    let status = gtk4::Label::new(None);
+    status.set_visible(false);
+    header.pack_end(&status);
+    let generation = Rc::new(Cell::new(0u64));
+    glib::spawn_future_local(glib::clone!(
+        #[weak]
+        window,
+        #[weak]
+        header,
+        async move {
+            while let Ok(event) = rx.recv().await {
+                handle_ui_event(event, &window, &header, &status, &generation);
+            }
+        }
+    ));
+
+    let allow: Vec<String> = site_hosts::SITE_HOSTS
+        .iter()
+        .map(|host| format!("https://{host}/*"))
+        .collect();
+    let allow: Vec<&str> = allow.iter().map(String::as_str).collect();
+    let shim = IPC_SHIM.replace("__ANIVOX_ORIGINS__", &site_hosts::js_origins());
+    for source in std::iter::once(shim.as_str()).chain(SITE_SCRIPTS) {
+        manager.add_script(&UserScript::new(
+            source,
+            UserContentInjectedFrames::TopFrame,
+            UserScriptInjectionTime::Start,
+            &allow,
+            &[],
+        ));
+    }
+
+    if !manager.register_script_message_handler_with_reply(IPC_HANDLER, None) {
+        eprintln!("Не удалось зарегистрировать обработчик сообщений");
+        return;
+    }
+    let view = webview.downgrade();
+    manager.connect_script_message_with_reply_received(
+        Some(IPC_HANDLER),
+        move |_, value, reply| {
+            // The page must still be on a trusted origin when the message arrives.
+            let uri = view.upgrade().and_then(|view| view.uri());
+            let trusted = uri
+                .as_deref()
+                .and_then(|uri| Url::parse(uri).ok())
+                .is_some_and(|url| site_hosts::is_site_origin(&url));
+            let reply = reply.clone();
+            if !trusted {
+                reply.return_error_message("Недоступно для этой страницы");
+                return true;
+            }
+            ipc.host().set_page(uri.map(|uri| uri.to_string()));
+            let Some(context) = value.context() else {
+                reply.return_error_message("Нет контекста JavaScript");
+                return true;
+            };
+            let parsed = serde_json::from_str::<serde_json::Value>(&value.to_str())
+                .map_err(|err| err.to_string())
+                .and_then(|message| {
+                    let command = message["cmd"].as_str().ok_or("Нет команды")?.to_owned();
+                    Ok((command, message["args"].clone()))
+                });
+            let ipc = ipc.clone();
+            glib::spawn_future_local(async move {
+                let result = match parsed {
+                    Ok((command, args)) => gio::spawn_blocking(move || ipc.handle(&command, args))
+                        .await
+                        .map_err(|_| "Команда завершилась аварийно".to_string())
+                        .and_then(|result| result),
+                    Err(err) => Err(err),
+                };
+                match result {
+                    Ok(value) => {
+                        let text = value.to_string();
+                        reply.return_value(&webkit6::javascriptcore::Value::new_string(
+                            &context,
+                            Some(&text),
+                        ));
+                    }
+                    Err(err) => reply.return_error_message(&err),
+                }
+            });
+            true
+        },
+    );
+}
+
+/// WebKit rounds page rendering to ~60 fps on 120/240 Hz screens unless this
+/// preference is off; the vblank emulation in [`vblank`] supplies the real rate.
+fn disable_60fps_preference(webview: &WebView) {
+    let (Some(settings), Some(features)) = (
+        WebViewExt::settings(webview),
+        webkit6::Settings::all_features(),
+    ) else {
+        return;
+    };
+    for feature in (0..features.length()).filter_map(|index| features.get(index)) {
+        if feature.identifier().as_deref() == Some("PreferPageRenderingUpdatesNear60FPS") {
+            settings.set_feature_enabled(&feature, false);
+        }
+    }
+}
+
+fn home_url() -> String {
+    format!("https://{}/", site_hosts::SITE_HOSTS[0])
+}
+
+fn main() -> glib::ExitCode {
+    // GTK's default Vulkan renderer drops WebKit to ~85 fps on NVIDIA (the GL
+    // renderer reaches the monitor's rate). Must be set before GTK starts.
+    if std::env::var_os("GSK_RENDERER").is_none() {
+        std::env::set_var("GSK_RENDERER", "gl");
+    }
+    let app = gtk4::Application::builder().application_id(APP_ID).build();
+    // GApplication is single-instance: a second launch re-activates the first.
+    app.connect_activate(|app| {
+        if let Some(window) = app.active_window() {
+            window.present();
+            return;
+        }
+        build_window(app);
+    });
+    app.run()
+}
+
+fn build_window(app: &gtk4::Application) {
+    let webview = WebView::new();
+    disable_60fps_preference(&webview);
+
+    let window = gtk4::ApplicationWindow::builder()
+        .application(app)
+        .title("Anivox")
+        .default_width(1280)
+        .default_height(800)
+        .child(&webview)
+        .build();
+
+    let header = gtk4::HeaderBar::new();
+    let back = gtk4::Button::from_icon_name("go-previous-symbolic");
+    let forward = gtk4::Button::from_icon_name("go-next-symbolic");
+    let reload = gtk4::Button::from_icon_name("view-refresh-symbolic");
+    let home = gtk4::Button::from_icon_name("go-home-symbolic");
+    for button in [&back, &forward, &reload, &home] {
+        header.pack_start(button);
+    }
+    window.set_titlebar(Some(&header));
+
+    back.connect_clicked(glib::clone!(
+        #[weak]
+        webview,
+        move |_| webview.go_back()
+    ));
+    forward.connect_clicked(glib::clone!(
+        #[weak]
+        webview,
+        move |_| webview.go_forward()
+    ));
+    reload.connect_clicked(glib::clone!(
+        #[weak]
+        webview,
+        move |_| webview.reload()
+    ));
+    home.connect_clicked(glib::clone!(
+        #[weak]
+        webview,
+        move |_| webview.load_uri(&home_url())
+    ));
+
+    // Keep the back/forward buttons in sync with the history.
+    let sync = glib::clone!(
+        #[weak]
+        back,
+        #[weak]
+        forward,
+        move |view: &WebView| {
+            back.set_sensitive(view.can_go_back());
+            forward.set_sensitive(view.can_go_forward());
+        }
+    );
+    webview.connect_uri_notify(sync.clone());
+    webview.connect_load_changed(move |view, _| sync(view));
+    back.set_sensitive(false);
+    forward.set_sensitive(false);
+
+    webview.connect_title_notify(glib::clone!(
+        #[weak]
+        window,
+        move |view| {
+            let title = view.title().filter(|title| !title.is_empty());
+            window.set_title(Some(title.as_deref().unwrap_or("Anivox")));
+        }
+    ));
+
+    // Links to foreign hosts open in the system browser; the site and its
+    // embedded players keep working inside the view.
+    webview.connect_decide_policy(|_, decision, kind| {
+        if kind != PolicyDecisionType::NavigationAction {
+            return false;
+        }
+        let Some(nav) = decision.downcast_ref::<NavigationPolicyDecision>() else {
+            return false;
+        };
+        let Some(action) = nav.navigation_action() else {
+            return false;
+        };
+        if action.navigation_type() != NavigationType::LinkClicked {
+            return false;
+        }
+        let Some(uri) = action.request().and_then(|request| request.uri()) else {
+            return false;
+        };
+        let trusted = Url::parse(&uri).is_ok_and(|url| site_hosts::is_site_origin(&url));
+        if trusted {
+            return false;
+        }
+        let _ = gio::AppInfo::launch_default_for_uri(&uri, gio::AppLaunchContext::NONE);
+        decision.ignore();
+        true
+    });
+
+    setup_ipc(&webview, &window, &header);
+    webview.load_uri(&home_url());
+    window.present();
+}

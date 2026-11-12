@@ -1,0 +1,25 @@
+[package]
+name = "anivox-gtk"
+version = "0.4.3"
+description = "Anivox minimal native Linux shell: GTK4 + WebKitGTK 6.0"
+edition = "2021"
+publish = false
+
+# Standalone: not part of the Tauri workspace, so `cargo test --workspace`
+# on Windows never tries to build GTK.
+[workspace]
+
+[dependencies]
+anivox-core = { path = "../src-tauri/anivox-core", features = ["net"] }
+gtk4 = { version = "0.11.5", features = ["v4_18"] }
+url = "2"
+webkit6 = { version = "0.6.1", features = ["gtk_v4_18", "v2_42"] }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-channel = "2"
+tokio = { version = "1.53.1", features = ["rt-multi-thread"] }
+discord-rich-presence = "0.2.4"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,15 +1,12 @@
 use crate::ensure_local_window;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Mutex;
 use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
-#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
-#[serde(default, rename_all = "camelCase")]
-pub(crate) struct PlayerSettings {
-    pub(crate) mpv_path: Option<String>,
-    pub(crate) mirror_embedded: bool,
-}
+pub(crate) use anivox_core::player_settings::{
+    load_player_settings, save_player_settings, validate_mpv_path, PlayerSettings,
+};
 
 #[derive(Default)]
 /// Настройки плеера живут в памяти: диск читается один раз, запись обновляет кеш.
@@ -24,44 +21,6 @@ pub(crate) fn cached_player_settings(app: &tauri::AppHandle) -> Result<PlayerSet
     let settings = load_player_settings(&player_settings_path(app)?)?;
     *cache = Some(settings.clone());
     Ok(settings)
-}
-
-pub(crate) fn validate_mpv_path(value: Option<String>) -> Result<Option<String>, String> {
-    let value = value.unwrap_or_default().trim().to_owned();
-    if value.is_empty() {
-        return Ok(None);
-    }
-    let path = Path::new(&value);
-    if !path.is_absolute() || !path.is_file() {
-        return Err("Укажите полный путь к существующему исполняемому файлу MPV".into());
-    }
-    Ok(Some(value))
-}
-
-pub(crate) fn load_player_settings(path: &Path) -> Result<PlayerSettings, String> {
-    match std::fs::read(path) {
-        Ok(bytes) => serde_json::from_slice(&bytes)
-            .map_err(|err| format!("Не удалось прочитать settings.json: {err}")),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(PlayerSettings::default()),
-        Err(err) => Err(format!("Не удалось открыть настройки: {err}")),
-    }
-}
-
-pub(crate) fn save_player_settings(path: &Path, settings: &PlayerSettings) -> Result<(), String> {
-    use std::io::Write;
-    let settings = PlayerSettings {
-        mpv_path: validate_mpv_path(settings.mpv_path.clone())?,
-        mirror_embedded: settings.mirror_embedded,
-    };
-    let parent = path.parent().ok_or("Не определён каталог настроек")?;
-    std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
-    let mut file = tempfile::NamedTempFile::new_in(parent).map_err(|err| err.to_string())?;
-    let bytes = serde_json::to_vec_pretty(&settings).map_err(|err| err.to_string())?;
-    file.write_all(&bytes).map_err(|err| err.to_string())?;
-    file.as_file().sync_all().map_err(|err| err.to_string())?;
-    file.persist(path)
-        .map_err(|err| format!("Не удалось сохранить настройки: {}", err.error))?;
-    Ok(())
 }
 
 pub(crate) fn player_settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {

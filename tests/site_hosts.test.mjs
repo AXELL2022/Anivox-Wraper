@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
-const hosts = [...read('src-tauri/src/site_hosts.rs').match(/SITE_HOSTS: \[&str; \d+\] = \[([^\]]*)\]/)[1]
+const hosts = [...read('src-tauri/anivox-core/src/site_hosts.rs').match(/SITE_HOSTS: \[&str; \d+\] = \[([^\]]*)\]/)[1]
   .matchAll(/"([^"]+)"/g)].map(match => match[1]);
 
 test('site host list has the main site and at least one mirror', () => {
