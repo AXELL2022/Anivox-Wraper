@@ -5,6 +5,7 @@
 
 pub mod discord_presence;
 pub mod player_settings;
+pub mod session_page;
 pub mod shikimori;
 pub mod site_hosts;
 pub mod tray_settings;

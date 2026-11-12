@@ -413,7 +413,10 @@ sys.exit(0)
         assert_eq!(resume["duration"], 1400.0);
 
         // A normal exit must not raise the "⚠ MPV" warning.
-        assert!(rx.try_recv().is_err(), "unexpected status after a clean exit");
+        assert!(
+            rx.try_recv().is_err(),
+            "unexpected status after a clean exit"
+        );
 
         let argv = std::fs::read_to_string(dir.path().join("argv.txt")).unwrap();
         for expected in [
@@ -423,7 +426,10 @@ sys.exit(0)
             "--http-header-fields-append=Origin: https://anivox.me",
             "--http-header-fields-append=Authorization: Bearer tok",
         ] {
-            assert!(argv.lines().any(|arg| arg == expected), "{expected}\n{argv}");
+            assert!(
+                argv.lines().any(|arg| arg == expected),
+                "{expected}\n{argv}"
+            );
         }
         assert_eq!(argv.lines().last(), Some("https://cdn.example.test/v.m3u8"));
     }
@@ -442,7 +448,14 @@ mod real_mpv_tests {
         let dir = tempfile::tempdir().unwrap();
         let video = dir.path().join("test.mp4");
         let made = std::process::Command::new("ffmpeg")
-            .args(["-v", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=25"])
+            .args([
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=size=320x180:rate=25",
+            ])
             .args(["-f", "lavfi", "-i", "sine=frequency=440", "-t", "120"])
             .args(["-pix_fmt", "yuv420p", "-shortest"])
             .arg(&video)
@@ -502,8 +515,12 @@ mod real_mpv_tests {
                 .find(|path| path.exists())
                 .expect("mpv ipc socket");
             let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
-            stream.write_all(b"{\"command\":[\"quit\"]}
-").unwrap();
+            stream
+                .write_all(
+                    b"{\"command\":[\"quit\"]}
+",
+                )
+                .unwrap();
         } else {
             assert!(std::process::Command::new("pkill")
                 .args(["-x", "mpv"])

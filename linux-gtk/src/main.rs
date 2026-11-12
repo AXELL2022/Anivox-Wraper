@@ -3,6 +3,7 @@
 //! platform-independent logic comes from `anivox-core`.
 
 mod ipc;
+mod session;
 mod vblank;
 
 use anivox_core::site_hosts;
@@ -90,7 +91,12 @@ fn handle_ui_event(
 
 /// Installs `window.__TAURI__.core.invoke` for trusted site pages and answers
 /// it from [`ipc::Ipc`]. Commands run off the GTK main thread.
-fn setup_ipc(webview: &WebView, window: &gtk4::ApplicationWindow, header: &gtk4::HeaderBar) {
+fn setup_ipc(
+    webview: &WebView,
+    window: &gtk4::ApplicationWindow,
+    header: &gtk4::HeaderBar,
+    restore_guard: Option<String>,
+) {
     let Some(manager) = webview.user_content_manager() else {
         return;
     };
@@ -130,7 +136,10 @@ fn setup_ipc(webview: &WebView, window: &gtk4::ApplicationWindow, header: &gtk4:
         .collect();
     let allow: Vec<&str> = allow.iter().map(String::as_str).collect();
     let shim = IPC_SHIM.replace("__ANIVOX_ORIGINS__", &site_hosts::js_origins());
-    for source in std::iter::once(shim.as_str()).chain(SITE_SCRIPTS) {
+    let scripts = std::iter::once(shim.as_str())
+        .chain(restore_guard.as_deref())
+        .chain(SITE_SCRIPTS);
+    for source in scripts {
         manager.add_script(&UserScript::new(
             source,
             UserContentInjectedFrames::TopFrame,
@@ -237,13 +246,25 @@ fn build_window(app: &gtk4::Application) {
     let webview = WebView::new();
     disable_60fps_preference(&webview);
 
+    let session = Rc::new(session::Session::open(
+        glib::user_config_dir()
+            .join(APP_DIR)
+            .join("session-gtk.json"),
+    ));
+    let saved = session.data();
+    let (width, height) = saved.size().unwrap_or((1280, 800));
     let window = gtk4::ApplicationWindow::builder()
         .application(app)
         .title("Anivox")
-        .default_width(1280)
-        .default_height(800)
+        .default_width(width)
+        .default_height(height)
         .child(&webview)
         .build();
+    window.set_size_request(session::MIN_WIDTH, session::MIN_HEIGHT);
+    if saved.maximized {
+        window.maximize();
+    }
+    track_session(&window, &webview, &session);
 
     let header = gtk4::HeaderBar::new();
     let back = gtk4::Button::from_icon_name("go-previous-symbolic");
@@ -328,7 +349,61 @@ fn build_window(app: &gtk4::Application) {
         true
     });
 
-    setup_ipc(&webview, &window, &header);
-    webview.load_uri(&home_url());
+    let startup = saved.startup_url();
+    setup_ipc(
+        &webview,
+        &window,
+        &header,
+        session::restore_guard_script(&startup),
+    );
+    webview.load_uri(startup.as_str());
     window.present();
+}
+
+/// Keeps the session file up to date: the page on every navigation (SPA
+/// navigation included), the window size after it has settled for a moment.
+fn track_session(
+    window: &gtk4::ApplicationWindow,
+    webview: &WebView,
+    session: &Rc<session::Session>,
+) {
+    let observe = glib::clone!(
+        #[strong]
+        session,
+        move |window: &gtk4::ApplicationWindow| {
+            let (width, height) = window.default_size();
+            session.observe_window(width, height, window.is_maximized(), window.is_fullscreen());
+            let generation = session.generation();
+            let session = session.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(600), move || {
+                if session.generation() == generation {
+                    if let Err(err) = session.flush() {
+                        eprintln!("Не удалось сохранить состояние окна: {err}");
+                    }
+                }
+            });
+        }
+    );
+    window.connect_default_width_notify(observe.clone());
+    window.connect_default_height_notify(observe.clone());
+    window.connect_maximized_notify(observe);
+    webview.connect_uri_notify(glib::clone!(
+        #[strong]
+        session,
+        move |view| {
+            if let Some(uri) = view.uri() {
+                session.set_last_page(&uri);
+            }
+        }
+    ));
+    window.connect_close_request(glib::clone!(
+        #[strong]
+        session,
+        move |_| {
+            if let Err(err) = session.flush() {
+                eprintln!("Не удалось сохранить сеанс: {err}");
+            }
+            glib::Propagation::Proceed
+        }
+    ));
 }
