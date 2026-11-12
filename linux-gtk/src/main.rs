@@ -56,11 +56,11 @@ struct Shell {
 impl Shell {
     fn handle(self: &Rc<Self>, event: ipc::UiEvent) {
         match event {
-            ipc::UiEvent::Fullscreen(on) => {
+            ipc::UiEvent::Fullscreen { on } => {
                 self.window.set_fullscreened(on);
                 self.header.set_visible(!on);
             }
-            ipc::UiEvent::SiteReady(generation) => self.recovery.finish(generation),
+            ipc::UiEvent::SiteReady { generation } => self.recovery.finish(generation),
             ipc::UiEvent::Status {
                 text,
                 color,
@@ -226,12 +226,8 @@ fn build_window(app: &gtk4::Application) {
     let session = Rc::new(session::Session::open(config_dir.join("session-gtk.json")));
     let (ui_tx, ui_rx) = async_channel::unbounded();
     let ipc = Arc::new(
-        ipc::Ipc::new(ipc::GtkHost::new(
-            ui_tx,
-            config_dir.clone(),
-            data_dir.clone(),
-        ))
-        .expect("не удалось запустить фоновые задачи"),
+        ipc::Ipc::new(ipc::host(ui_tx, config_dir.clone(), data_dir.clone()))
+            .expect("не удалось запустить фоновые задачи"),
     );
     let saved = session.data();
     let (width, height) = saved.size().unwrap_or((1280, 800));

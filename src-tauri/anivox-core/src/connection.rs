@@ -1,16 +1,16 @@
 //! Connection check: is it the user's internet or the video server?
 //!
-//! Port of the platform-independent part of linux-gtk `connection.rs` (itself
-//! mirroring `ui/connection.js`): `segment-monitor.js` passively reports how
-//! video segments download, the panel compares that with a download from
-//! speed.cloudflare.com.
+//! The verdict logic mirrors `ui/connection.js`: `segment-monitor.js` passively
+//! reports how video segments download, the native panel compares that with a
+//! download from speed.cloudflare.com. Shells only draw the [`View`].
 
 use crate::segments::SegmentStats;
-use serde::Serialize;
-use std::time::Duration;
+use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "net")]
 const SPEED_URL: &str = "https://speed.cloudflare.com/__down?bytes=8000000";
-const SPEED_LIMIT: Duration = Duration::from_secs(6);
+#[cfg(feature = "net")]
+const SPEED_LIMIT: std::time::Duration = std::time::Duration::from_secs(6);
 /// Site data older than this counts as missing.
 const STALE_MS: f64 = 4000.0;
 /// Below this speed a value is shown in red.
@@ -18,7 +18,7 @@ pub const GOOD_MBPS: f64 = 10.0;
 /// A segment without a single byte for longer than this is "stalled".
 const STALL_MS: u64 = 5000;
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NetResult {
     pub ok: bool,
     pub mbps: f64,
@@ -284,14 +284,13 @@ pub fn assess(net: Option<NetResult>, measuring: bool, seg: Option<&SegmentStats
 }
 
 /// Downloads a test file for up to six seconds and reports the speed.
-pub async fn measure_internet() -> NetResult {
+#[cfg(feature = "net")]
+pub async fn measure_internet(user_agent: &str) -> NetResult {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let started = std::time::Instant::now();
     let mut bytes = 0usize;
     let download = async {
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("Anivox/", env!("CARGO_PKG_VERSION")))
-            .build()?;
+        let client = reqwest::Client::builder().user_agent(user_agent).build()?;
         let stamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -410,5 +409,26 @@ mod tests {
         let value = serde_json::to_value(assess(None, false, None)).unwrap();
         assert_eq!(value["video"]["kind"], "pending");
         assert!(value["verdict"]["title"].is_string());
+    }
+}
+
+#[cfg(all(test, feature = "net"))]
+mod network_tests {
+    /// Needs the internet: `cargo test -- --ignored network`.
+    #[test]
+    #[ignore = "needs the internet"]
+    fn network_speed_test_and_shikimori_work_over_https() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let net = runtime.block_on(super::measure_internet("Anivox-test"));
+        eprintln!("speed: {net:?}");
+        assert!(net.ok && net.mbps > 0.0);
+        let data = runtime
+            .block_on(crate::shikimori::fetch_shikimori_data(5114, "Anivox-test"))
+            .unwrap();
+        eprintln!("shikimori: {:?}", data.label);
+        assert!(data.label.is_some());
     }
 }

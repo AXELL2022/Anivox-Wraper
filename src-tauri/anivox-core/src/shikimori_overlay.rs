@@ -1,7 +1,7 @@
-//! Shikimori overlay rules shared with linux-gtk `shikimori.rs`: the start page
-//! for the current Anivox page and the page kind Discord may show.
+//! Shikimori overlay rules for the native shells: the start page for the
+//! current Anivox page, the page kind Discord may show and who may close it.
 
-use anivox_core::shikimori::site_title_id;
+use crate::shikimori::site_title_id;
 use url::Url;
 
 pub const ORIGIN: &str = "https://shikimori.io";

@@ -6,21 +6,22 @@
 //! and 1 on failure (out = error message). UI events arrive as JSON through the
 //! callback passed to [`anivox_create`], possibly on a background thread.
 
-pub mod connection;
 pub mod ipc;
-pub mod segments;
 pub mod session;
-pub mod shikimori;
-pub mod site_load;
-pub mod updater;
 
+use anivox_core::connection;
 use anivox_core::player_settings::{load_player_settings, save_player_settings, PlayerSettings};
+use anivox_core::shikimori_overlay as shikimori;
 use anivox_core::site_hosts;
+use anivox_core::updater;
 use serde_json::Value;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::Arc;
+
+/// Version of this shell, compared with the release manifest.
+const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub type EventCallback = extern "C" fn(event_json: *const c_char, user: *mut c_void);
 
@@ -130,7 +131,7 @@ pub extern "C" fn anivox_create(
                 }
             }
         });
-        let ipc = ipc::Ipc::new(ipc::WinHost::new(sink, config, data)).ok()?;
+        let ipc = ipc::Ipc::new(ipc::host(sink, config, data)).ok()?;
         Some(Box::into_raw(Box::new(Anivox { ipc })))
     });
     created.ok().flatten().unwrap_or(std::ptr::null_mut())
@@ -350,7 +351,9 @@ pub extern "C" fn anivox_connection_view(
 pub extern "C" fn anivox_measure_internet(anivox: *const Anivox, out: *mut *mut c_char) -> i32 {
     guarded(out, || {
         let anivox = handle(anivox)?;
-        let result = anivox.ipc.block_on(connection::measure_internet());
+        let result = anivox
+            .ipc
+            .block_on(connection::measure_internet(ipc::USER_AGENT));
         serde_json::to_value(result).map_err(|err| err.to_string())
     })
 }
@@ -360,10 +363,10 @@ pub extern "C" fn anivox_measure_internet(anivox: *const Anivox, out: *mut *mut 
 pub extern "C" fn anivox_update_check(anivox: *const Anivox, out: *mut *mut c_char) -> i32 {
     guarded(out, || {
         let anivox = handle(anivox)?;
-        let update = anivox.ipc.block_on(updater::check())?;
+        let update = anivox.ipc.block_on(updater::check(CURRENT_VERSION))?;
         Ok(serde_json::json!({
             "update": update,
-            "current": updater::CURRENT,
+            "current": CURRENT_VERSION,
             "releasePage": updater::RELEASE_PAGE,
         }))
     })

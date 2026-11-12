@@ -1,4 +1,4 @@
-//! Video segment summary reported by `segment-monitor.js` (same as linux-gtk).
+//! Video segment summary reported by `segment-monitor.js` for the connection check.
 
 use serde::{Deserialize, Serialize};
 
@@ -26,5 +26,22 @@ impl SegmentStats {
             self.mbps = 0.0;
         }
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn page_values_are_bounded() {
+        let stats = SegmentStats {
+            host: "x".repeat(500),
+            mbps: f64::NAN,
+            ..SegmentStats::default()
+        }
+        .sanitized();
+        assert_eq!(stats.host.len(), 120);
+        assert_eq!(stats.mbps, 0.0);
     }
 }

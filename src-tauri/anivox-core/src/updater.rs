@@ -1,17 +1,15 @@
-//! Update check (port of linux-gtk `updater.rs`).
+//! Update check for the native shells.
 //!
 //! The release manifest (`latest.json`, the same one the Tauri updater reads)
-//! carries the version and the notes from CHANGELOG. The WinUI build is not a
-//! release artifact, so it is never replaced in place: after review the shell
-//! opens the release page. Before that the version is checked again; if it
-//! changed, the new notes are shown and need a fresh confirmation.
+//! carries the version and the notes from CHANGELOG. Native builds are never
+//! replaced in place: after review the shell opens the release page. Before
+//! that the version is checked again; if it changed, the new notes are shown
+//! and need a fresh confirmation.
 
-use std::time::Duration;
-
+#[cfg(feature = "net")]
 const MANIFEST_URL: &str =
     "https://github.com/AXELL2022/Anivox-Wraper/releases/latest/download/latest.json";
 pub const RELEASE_PAGE: &str = "https://github.com/AXELL2022/Anivox-Wraper/releases/latest";
-pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Clone, Debug, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct UpdateInfo {
@@ -44,11 +42,13 @@ pub fn available(manifest: &[u8], current: &str) -> Result<Option<UpdateInfo>, S
     Ok(is_newer(&info.version, current).then_some(info))
 }
 
-pub async fn check() -> Result<Option<UpdateInfo>, String> {
+/// Reads the manifest; `current` is the running shell's version.
+#[cfg(feature = "net")]
+pub async fn check(current: &str) -> Result<Option<UpdateInfo>, String> {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let client = reqwest::Client::builder()
-        .user_agent(concat!("Anivox/", env!("CARGO_PKG_VERSION")))
-        .timeout(Duration::from_secs(15))
+        .user_agent(format!("Anivox/{current}"))
+        .timeout(std::time::Duration::from_secs(15))
         .build()
         .map_err(|err| err.to_string())?;
     let bytes = client
@@ -60,7 +60,7 @@ pub async fn check() -> Result<Option<UpdateInfo>, String> {
         .bytes()
         .await
         .map_err(|err| err.to_string())?;
-    available(&bytes, CURRENT)
+    available(&bytes, current)
 }
 
 #[cfg(test)]
@@ -91,11 +91,15 @@ mod tests {
     }
 
     /// Needs the internet: `cargo test -- --ignored network`.
+    #[cfg(feature = "net")]
     #[test]
     #[ignore = "needs the internet"]
     fn network_release_manifest_is_readable() {
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        let update = runtime.block_on(check()).unwrap();
-        eprintln!("current {CURRENT}, update: {update:?}");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let update = runtime.block_on(check("0.0.1")).unwrap();
+        eprintln!("update: {update:?}");
     }
 }

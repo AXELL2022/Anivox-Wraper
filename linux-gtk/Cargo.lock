@@ -22,16 +22,13 @@ version = "0.5.0"
 dependencies = [
  "anivox-core",
  "async-channel",
- "discord-rich-presence",
  "gtk4",
  "ksni",
  "libc",
  "reqwest",
- "rustls",
  "serde",
  "serde_json",
  "tempfile",
- "tokio",
  "url",
  "webkit6",
 ]

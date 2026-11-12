@@ -7,7 +7,7 @@ edition = "2021"
 
 [features]
 default = ["net"]
-# MPV IPC (tokio) and Shikimori API client (reqwest). The macOS shell does not need them.
+# MPV IPC (tokio), the native shells' site dispatcher, Shikimori/update/speed clients (reqwest). The macOS shell does not need them.
 net = ["dep:tokio", "dep:reqwest", "dep:rustls"]
 
 [dependencies]
@@ -16,6 +16,6 @@ serde_json = "1"
 url = "2"
 tempfile = "3"
 discord-rich-presence = "0.2.4"
-tokio = { version = "1.53.1", features = ["io-util", "net", "process", "time", "sync", "macros", "rt"], optional = true }
+tokio = { version = "1.53.1", features = ["io-util", "net", "process", "time", "sync", "macros", "rt", "rt-multi-thread"], optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["json"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }

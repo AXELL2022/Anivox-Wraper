@@ -1,365 +1,39 @@
-//! Command dispatcher behind the WebKit message handler. Commands are blocking
-//! and must be called off the GTK main thread; anything that touches widgets
-//! is sent to the main thread as a [`UiEvent`].
+//! Site command dispatcher behind the WebKit message handler: the shared
+//! [`anivox_core::site_ipc`]. Commands are blocking and must be called off the
+//! GTK main thread; anything that touches widgets reaches the main thread as a
+//! [`UiEvent`] through an async channel.
 
-use crate::connection::SegmentStats;
-use crate::site_recovery::{self, SharedLoad};
-use anivox_core::discord_presence::{update_discord_presence, DiscordPresence};
-use anivox_core::mpv::{PlaybackMedia, ResumePoint};
-use anivox_core::mpv_session::{self as session, MpvHost, MpvLaunchRequest, MpvState};
-use anivox_core::player_settings::{load_player_settings, PlayerSettings};
-use anivox_core::shikimori::{presence_title_id, ShikimoriCache};
-use anivox_core::site_hosts;
-use discord_rich_presence::DiscordIpcClient;
-use serde::Deserialize;
-use serde_json::Value;
+use anivox_core::site_ipc::EventSink;
+pub use anivox_core::site_ipc::{SiteEvent as UiEvent, SiteHost, SiteIpc as Ipc};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-use url::Url;
+use std::sync::Arc;
 
-const USER_AGENT: &str = concat!("Anivox/", env!("CARGO_PKG_VERSION"));
+pub const USER_AGENT: &str = concat!("Anivox/", env!("CARGO_PKG_VERSION"));
 
-/// Requests for the GTK main thread.
-#[derive(Debug)]
-pub enum UiEvent {
-    Status {
-        text: String,
-        color: String,
-        reset_after_ms: u64,
-        detail: Option<String>,
-    },
-    Fullscreen(bool),
-    /// `site-lifecycle.js` saw the site app mount for this load attempt.
-    SiteReady(u64),
-}
-
-struct Shared {
-    mpv: MpvState,
-    discord: Mutex<Option<DiscordIpcClient>>,
-    shikimori: ShikimoriCache,
+pub fn host(
+    ui: async_channel::Sender<UiEvent>,
     config_dir: PathBuf,
     data_dir: PathBuf,
-    /// Current page address; set by the main thread, used for the Referer origin.
-    page: Mutex<Option<String>>,
-    ui: async_channel::Sender<UiEvent>,
-    /// Latest video segment summary from `segment-monitor.js`.
-    segments: Mutex<Option<SegmentStats>>,
-    site_load: SharedLoad,
-    /// Page kind shown in Discord while the Shikimori overlay is open.
-    shikimori_activity: Mutex<Option<String>>,
+) -> SiteHost {
+    let sink: EventSink = Arc::new(move |event: UiEvent| {
+        let _ = ui.send_blocking(event);
+    });
+    SiteHost::new(sink, USER_AGENT, config_dir, data_dir)
 }
 
-#[derive(Clone)]
-pub struct GtkHost(Arc<Shared>);
-
-impl GtkHost {
-    pub fn new(ui: async_channel::Sender<UiEvent>, config_dir: PathBuf, data_dir: PathBuf) -> Self {
-        Self(Arc::new(Shared {
-            mpv: MpvState::default(),
-            discord: Mutex::new(None),
-            shikimori: ShikimoriCache::default(),
-            config_dir,
-            data_dir,
-            page: Mutex::new(None),
-            ui,
-            segments: Mutex::new(None),
-            site_load: SharedLoad::default(),
-            shikimori_activity: Mutex::new(None),
-        }))
-    }
-
-    pub fn set_page(&self, uri: Option<String>) {
-        if let Ok(mut page) = self.0.page.lock() {
-            *page = uri;
-        }
-    }
-
-    /// Load watchdog state shared with the recovery screen.
-    pub fn site_load(&self) -> SharedLoad {
-        self.0.site_load.clone()
-    }
-
-    fn page(&self) -> Option<String> {
-        self.0.page.lock().ok().and_then(|page| page.clone())
-    }
-
-    fn send(&self, event: UiEvent) {
-        let _ = self.0.ui.send_blocking(event);
-    }
-}
-
-impl MpvHost for GtkHost {
-    fn mpv(&self) -> &MpvState {
-        &self.0.mpv
-    }
-    fn discord(&self) -> &Mutex<Option<DiscordIpcClient>> {
-        &self.0.discord
-    }
-    fn shikimori(&self) -> &ShikimoriCache {
-        &self.0.shikimori
-    }
-    fn user_agent(&self) -> &'static str {
-        USER_AGENT
-    }
-    fn site_origin(&self) -> String {
-        let page = self.0.page.lock().ok().and_then(|page| page.clone());
-        site_hosts::site_origin_for(page.and_then(|uri| Url::parse(&uri).ok()).as_ref())
-    }
-    fn player_settings(&self) -> Result<PlayerSettings, String> {
-        load_player_settings(&self.0.config_dir.join("settings.json"))
-    }
-    fn logs_dir(&self) -> Result<PathBuf, String> {
-        Ok(self.0.data_dir.join("logs"))
-    }
-    fn history_path(&self) -> Result<PathBuf, String> {
-        Ok(self.0.config_dir.join("playback-history.json"))
-    }
-    fn report_status(&self, text: &str, color: &str, reset_after_ms: u64, detail: Option<String>) {
-        self.send(UiEvent::Status {
-            text: text.into(),
-            color: color.into(),
-            reset_after_ms,
-            detail,
-        });
-    }
-}
-
-pub struct Ipc {
-    host: GtkHost,
-    runtime: tokio::runtime::Runtime,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct OpenInMpv {
-    url: String,
-    title: Option<String>,
-    start_time: Option<f64>,
-    sub_url: Option<String>,
-    token: Option<String>,
-    media: Option<PlaybackMedia>,
-}
-
-#[derive(Deserialize)]
-struct DocumentState {
-    href: String,
-    loaded: bool,
-    generation: u64,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct PlayerStatus {
-    text: String,
-    color: String,
-    #[serde(default)]
-    reset_after_ms: u64,
-    detail: Option<String>,
-}
-
-impl Ipc {
-    pub fn new(host: GtkHost) -> Result<Self, String> {
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .map_err(|err| err.to_string())?;
-        Ok(Self { host, runtime })
-    }
-
-    pub fn host(&self) -> &GtkHost {
-        &self.host
-    }
-
-    /// Runs a future on the background runtime; call off the GTK main thread.
-    pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
-        self.runtime.block_on(future)
-    }
-
-    /// For the native connection panel.
-    pub fn segment_stats(&self) -> Option<SegmentStats> {
-        self.host.0.segments.lock().ok()?.clone()
-    }
-
-    /// While the Shikimori overlay is open and MPV is not playing, Discord shows
-    /// the kind of Shikimori page instead of the embedded player; `None`
-    /// restores the embedded player's last status.
-    pub fn set_shikimori_activity(&self, activity: Option<String>) -> Result<(), String> {
-        {
-            let mut current = self.host.0.shikimori_activity.lock().map_err(err)?;
-            if *current == activity {
-                return Ok(());
-            }
-            current.clone_from(&activity);
-        }
-        let mut client = self.host.discord().lock().map_err(err)?;
-        if self.mpv_owns_discord()? {
-            return Ok(());
-        }
-        let presence = match activity {
-            Some(text) => DiscordPresence {
-                details: "Shikimori".into(),
-                state_text: text,
-                ..DiscordPresence::default()
-            },
-            None => {
-                let mut presence = self.host.mpv().embedded.lock().map_err(err)?.clone();
-                self.host.shikimori().decorate(&mut presence);
-                presence
-            }
-        };
-        update_discord_presence(&mut client, &presence)
-    }
-
-    fn mpv_owns_discord(&self) -> Result<bool, String> {
-        Ok(self
-            .host
-            .mpv()
-            .current
-            .lock()
-            .map_err(err)?
-            .as_ref()
-            .is_some_and(|session| session.playback.ready))
-    }
-
-    /// Used by the native settings panel only; remote pages have no such command.
-    pub fn clear_playback_history(&self) -> Result<(), String> {
-        session::clear_playback_history(&self.host)
-    }
-
-    pub fn handle(&self, command: &str, args: Value) -> Result<Value, String> {
-        match command {
-            "set_discord_rpc" => self.set_discord_rpc(args),
-            "get_mpv_state" => to_json(self.host.mpv().current.lock().map_err(err)?.clone()),
-            "get_playback_resume" => {
-                let key = args["key"].as_str().ok_or("Нет ключа серии")?;
-                let point: Option<ResumePoint> = session::playback_resume(&self.host, key)?;
-                to_json(point)
-            }
-            "open_in_mpv" => {
-                let request: OpenInMpv = from_json(args)?;
-                let launched = self.runtime.block_on(session::open_in_mpv(
-                    self.host.clone(),
-                    MpvLaunchRequest {
-                        url: request.url,
-                        title: request.title,
-                        start_time: request.start_time,
-                        sub_url: request.sub_url,
-                        token: request.token,
-                        media: request.media,
-                    },
-                ))?;
-                to_json(launched)
-            }
-            "report_player_status" => {
-                let status: PlayerStatus = from_json(args)?;
-                self.host.send(UiEvent::Status {
-                    text: status.text,
-                    color: status.color,
-                    reset_after_ms: status.reset_after_ms,
-                    detail: status.detail,
-                });
-                Ok(Value::Null)
-            }
-            "report_segment_stats" => {
-                let stats: SegmentStats =
-                    from_json(args.get("stats").cloned().unwrap_or(Value::Null))?;
-                *self.host.0.segments.lock().map_err(err)? = Some(stats.sanitized());
-                Ok(Value::Null)
-            }
-            "get_site_document_generation" => {
-                let info = self.host.0.site_load.lock().map_err(err)?;
-                Ok(Value::from(info.generation))
-            }
-            "site_document_state" => {
-                let report: DocumentState = from_json(args)?;
-                let page = self.host.page().ok_or("Страница неизвестна")?;
-                let current = self.host.0.site_load.lock().map_err(err)?.generation;
-                if site_recovery::document_report_matches(&page, &report.href)?
-                    && report.generation == current
-                    && report.loaded
-                {
-                    self.host.send(UiEvent::SiteReady(report.generation));
-                }
-                Ok(Value::Null)
-            }
-            "content_fullscreen" => {
-                let fullscreen = args["fullscreen"].as_bool().unwrap_or(false);
-                self.host.send(UiEvent::Fullscreen(fullscreen));
-                Ok(Value::Null)
-            }
-            other => Err(format!("Команда недоступна в этой оболочке: {other}")),
-        }
-    }
-
-    fn set_discord_rpc(&self, args: Value) -> Result<Value, String> {
-        let mut presence: DiscordPresence =
-            from_json(args.get("presence").cloned().unwrap_or(Value::Null))?;
-        presence.truncate_texts();
-        if let Some(id) = presence_title_id(&presence) {
-            self.runtime
-                .block_on(self.host.shikimori().ensure(id, USER_AGENT));
-        }
-        let mut client = self.host.discord().lock().map_err(err)?;
-        // The embedded player keeps its last status; an active MPV session owns Discord.
-        let mpv = self.host.mpv();
-        *mpv.embedded.lock().map_err(err)? = presence.clone();
-        if self.mpv_owns_discord()?
-            || self
-                .host
-                .0
-                .shikimori_activity
-                .lock()
-                .map_err(err)?
-                .is_some()
-        {
-            return Ok(Value::Null);
-        }
-        self.host.shikimori().decorate(&mut presence);
-        update_discord_presence(&mut client, &presence)?;
-        Ok(Value::Null)
-    }
-}
-
-fn err<E: ToString>(error: E) -> String {
-    error.to_string()
-}
-
-fn from_json<T: serde::de::DeserializeOwned>(value: Value) -> Result<T, String> {
-    serde_json::from_value(value).map_err(err)
-}
-
-fn to_json<T: serde::Serialize>(value: T) -> Result<Value, String> {
-    serde_json::to_value(value).map_err(err)
-}
-
-#[cfg(test)]
-mod tests {
+/// Shell-specific checks; the dispatcher's own tests live in `anivox-core`.
+#[cfg(all(test, unix))]
+mod discord_tests {
     use super::*;
+    use anivox_core::mpv_session::MpvHost;
     use serde_json::json;
 
     fn ipc(dir: &std::path::Path) -> (Ipc, async_channel::Receiver<UiEvent>) {
         let (tx, rx) = async_channel::unbounded();
-        let host = GtkHost::new(tx, dir.join("config"), dir.join("data"));
-        (Ipc::new(host).unwrap(), rx)
-    }
-
-    #[test]
-    fn unknown_commands_are_rejected() {
-        let dir = tempfile::tempdir().unwrap();
-        let (ipc, _rx) = ipc(dir.path());
-        let err = ipc.handle("close_shikimori", json!({})).unwrap_err();
-        assert!(err.contains("close_shikimori"), "{err}");
-    }
-
-    #[test]
-    fn malformed_presence_is_rejected_before_touching_discord() {
-        let dir = tempfile::tempdir().unwrap();
-        let (ipc, _rx) = ipc(dir.path());
-        assert!(ipc
-            .handle("set_discord_rpc", json!({"presence": 5}))
-            .is_err());
-        assert!(ipc.host().discord().lock().unwrap().is_none());
+        (
+            Ipc::new(host(tx, dir.join("config"), dir.join("data"))).unwrap(),
+            rx,
+        )
     }
 
     #[test]
@@ -377,122 +51,26 @@ mod tests {
     }
 
     #[test]
-    fn mpv_state_is_empty_and_resume_needs_a_key() {
-        let dir = tempfile::tempdir().unwrap();
-        let (ipc, _rx) = ipc(dir.path());
-        assert_eq!(ipc.handle("get_mpv_state", json!({})).unwrap(), Value::Null);
-        assert!(ipc.handle("get_playback_resume", json!({})).is_err());
-        let none = ipc
-            .handle("get_playback_resume", json!({"key": "1:2:3"}))
-            .unwrap();
-        assert_eq!(none, Value::Null);
-    }
-
-    #[test]
-    fn status_and_fullscreen_are_forwarded_to_the_ui() {
-        let dir = tempfile::tempdir().unwrap();
-        let (ipc, rx) = ipc(dir.path());
-        ipc.handle(
-            "report_player_status",
-            json!({"text": "MPV", "color": "#fff", "resetAfterMs": 5, "detail": null}),
-        )
-        .unwrap();
-        ipc.handle("content_fullscreen", json!({"fullscreen": true}))
-            .unwrap();
-        assert!(matches!(rx.try_recv().unwrap(), UiEvent::Status { .. }));
-        assert!(matches!(rx.try_recv().unwrap(), UiEvent::Fullscreen(true)));
-    }
-
-    #[test]
-    fn segment_stats_are_stored_for_the_connection_panel() {
-        let dir = tempfile::tempdir().unwrap();
-        let (ipc, _rx) = ipc(dir.path());
-        assert!(ipc.segment_stats().is_none());
-        assert!(ipc
-            .handle("report_segment_stats", json!({"stats": 1}))
-            .is_err());
-        ipc.handle(
-            "report_segment_stats",
-            json!({"stats": {"host": "cdn", "active": true, "mbps": 12.5, "updatedAt": 5.0}}),
-        )
-        .unwrap();
-        let stats = ipc.segment_stats().unwrap();
-        assert_eq!((stats.host.as_str(), stats.mbps), ("cdn", 12.5));
-    }
-
-    #[test]
-    fn only_the_current_page_and_attempt_can_end_the_loading_screen() {
-        let dir = tempfile::tempdir().unwrap();
-        let (ipc, rx) = ipc(dir.path());
-        ipc.host().site_load().lock().unwrap().begin();
-        ipc.host()
-            .set_page(Some("https://anivox.fun/anime/1".into()));
-        assert_eq!(
-            ipc.handle("get_site_document_generation", json!({}))
-                .unwrap(),
-            json!(1)
-        );
-        let report = |href: &str, generation: u64| json!({"href": href, "loaded": true, "generation": generation});
-        ipc.handle("site_document_state", report("https://anivox.fun/", 1))
-            .unwrap();
-        ipc.handle(
-            "site_document_state",
-            report("https://anivox.fun/anime/1", 0),
-        )
-        .unwrap();
-        assert!(ipc
-            .handle(
-                "site_document_state",
-                report("https://evil.test/anime/1", 1)
-            )
-            .is_err());
-        assert!(rx.try_recv().is_err());
-        ipc.handle(
-            "site_document_state",
-            report("https://anivox.fun/anime/1", 1),
-        )
-        .unwrap();
-        assert!(matches!(rx.try_recv().unwrap(), UiEvent::SiteReady(1)));
-    }
-
-    #[test]
     fn shikimori_activity_is_remembered_and_cleared() {
         let dir = tempfile::tempdir().unwrap();
         let (ipc, _rx) = ipc(dir.path());
         std::env::set_var("XDG_RUNTIME_DIR", dir.path());
         // No Discord here: the send fails, but the overlay state is kept.
         let _ = ipc.set_shikimori_activity(Some("Листает Shikimori".into()));
-        assert!(ipc.host().0.shikimori_activity.lock().unwrap().is_some());
+        assert!(ipc.shikimori_activity().is_some());
         // The embedded player keeps its status but does not override Shikimori.
         let args = json!({"presence": {"details": "Аниме", "stateText": "Серия 1"}});
         ipc.handle("set_discord_rpc", args).unwrap();
         assert_eq!(ipc.host().mpv().embedded.lock().unwrap().details, "Аниме");
         let _ = ipc.set_shikimori_activity(None);
-        assert!(ipc.host().0.shikimori_activity.lock().unwrap().is_none());
-    }
-
-    #[test]
-    fn launching_a_missing_player_fails_with_a_clear_message() {
-        let dir = tempfile::tempdir().unwrap();
-        let (ipc, _rx) = ipc(dir.path());
-        std::fs::create_dir_all(dir.path().join("config")).unwrap();
-        let settings = json!({"mpvPath": "/definitely/missing/mpv"});
-        std::fs::write(
-            dir.path().join("config/settings.json"),
-            settings.to_string(),
-        )
-        .unwrap();
-        let err = ipc
-            .handle("open_in_mpv", json!({"url": "https://example.test/v.m3u8"}))
-            .unwrap_err();
-        assert!(err.contains("MPV"), "{err}");
+        assert!(ipc.shikimori_activity().is_none());
     }
 }
 
 #[cfg(all(test, unix))]
 mod mpv_flow_tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::os::unix::fs::PermissionsExt;
 
     /// A stand-in for mpv: serves the JSON IPC socket, reports a loaded file at
@@ -553,7 +131,7 @@ sys.exit(0)
         .unwrap();
 
         let (tx, rx) = async_channel::unbounded();
-        let host = GtkHost::new(tx, config, dir.path().join("data"));
+        let host = host(tx, config, dir.path().join("data"));
         host.set_page(Some("https://anivox.me/anime/1-x".into()));
         let ipc = Ipc::new(host).unwrap();
 
@@ -640,7 +218,7 @@ mod real_mpv_tests {
         assert!(made.success());
 
         let (tx, rx) = async_channel::unbounded();
-        let host = GtkHost::new(tx, dir.path().join("config"), dir.path().join("data"));
+        let host = host(tx, dir.path().join("config"), dir.path().join("data"));
         host.set_page(Some("https://anivox.fun/anime/1-x".into()));
         let ipc = Ipc::new(host).unwrap();
 

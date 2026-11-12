@@ -7,7 +7,7 @@
 //! the overlay. Engine-managed popups stay available for social sign-in.
 
 use crate::ipc::Ipc;
-use anivox_core::shikimori::site_title_id;
+use anivox_core::shikimori_overlay::{page_activity, start_url, ORIGIN};
 use gtk4::prelude::*;
 use gtk4::{gdk, gio, glib};
 use std::cell::RefCell;
@@ -21,7 +21,6 @@ use webkit6::{
     UserScript, UserScriptInjectionTime, WebView,
 };
 
-const ORIGIN: &str = "https://shikimori.io";
 const CLOSE_HANDLER: &str = "anivoxShikimoriClose";
 const MARGIN: i32 = 16;
 /// Escape in the page closes the overlay unless the page handled the key itself.
@@ -41,55 +40,6 @@ const CSS: &str = "
 .shikimori-panel { background: @window_bg_color; border-radius: 12px; box-shadow: 0 12px 48px alpha(black, 0.5); }
 .shikimori-panel .shikimori-header { padding: 4px 6px; }
 ";
-
-/// Overlay start page for the page shown in the site view.
-pub fn start_url(content: Option<&str>) -> String {
-    content
-        .and_then(|uri| Url::parse(uri).ok())
-        .and_then(|url| site_title_id(&url))
-        // `/animes/<id>` is 404 for some titles; the `z` form always redirects.
-        .map(|id| format!("{ORIGIN}/animes/z{id}"))
-        .unwrap_or_else(|| format!("{ORIGIN}/"))
-}
-
-/// What Discord shows while the overlay is open. Only the kind of page:
-/// profile names, search queries and other hosts (sign-in) never leak.
-pub fn page_activity(uri: &str) -> String {
-    let browsing = "Листает Shikimori".to_owned();
-    let Ok(url) = Url::parse(uri) else {
-        return browsing;
-    };
-    if url.host_str() != Some("shikimori.io") {
-        return browsing;
-    }
-    let mut segments = url.path_segments().into_iter().flatten();
-    let first = segments.next().unwrap_or("");
-    let rest: Vec<&str> = segments.collect();
-    let ranked = rest.windows(2).any(|pair| pair == ["order-by", "ranked"])
-        || url
-            .query_pairs()
-            .any(|(key, value)| key == "order" && value == "ranked");
-    let text = match first {
-        "animes"
-            if rest
-                .first()
-                .map(|id| id.trim_start_matches('z'))
-                .is_some_and(|id| id.starts_with(|c: char| c.is_ascii_digit())) =>
-        {
-            "Читает об аниме на Shikimori"
-        }
-        "animes" if ranked => "Смотрит топ аниме",
-        "animes" => "Ищет аниме в каталоге Shikimori",
-        "mangas" => "Листает мангу на Shikimori",
-        "ranobe" => "Листает ранобэ на Shikimori",
-        "forum" => "Читает форум Shikimori",
-        "clubs" => "Смотрит клубы Shikimori",
-        "characters" | "people" => "Смотрит персонажей на Shikimori",
-        "ongoings" | "calendar" => "Смотрит календарь онгоингов",
-        _ => return browsing,
-    };
-    text.to_owned()
-}
 
 struct Open {
     backdrop: gtk4::Box,
@@ -393,56 +343,5 @@ impl Shikimori {
             .set_tooltip_text(Some("Открыть Shikimori поверх сайта"));
         self.content.grab_focus();
         self.send_activity(None);
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn overlay_opens_the_same_title_or_the_home_page() {
-        assert_eq!(
-            start_url(Some("https://anivox.fun/anime/38524-shingeki")),
-            "https://shikimori.io/animes/z38524"
-        );
-        assert_eq!(
-            start_url(Some("https://anivox.me/anime/5114")),
-            "https://shikimori.io/animes/z5114"
-        );
-        for other in [
-            Some("https://anivox.fun/"),
-            Some("https://evil.test/anime/1"),
-            None,
-        ] {
-            assert_eq!(start_url(other), "https://shikimori.io/");
-        }
-    }
-
-    #[test]
-    fn discord_sees_only_the_kind_of_page() {
-        let cases = [
-            ("https://shikimori.io/", "Листает Shikimori"),
-            (
-                "https://shikimori.io/animes/z5114-fma",
-                "Читает об аниме на Shikimori",
-            ),
-            (
-                "https://shikimori.io/animes/order-by/ranked",
-                "Смотрит топ аниме",
-            ),
-            (
-                "https://shikimori.io/animes?search=secret",
-                "Ищет аниме в каталоге Shikimori",
-            ),
-            ("https://shikimori.io/SomeUserName", "Листает Shikimori"),
-            ("https://shikimori.io/forum/news", "Читает форум Shikimori"),
-            ("https://accounts.google.com/o/oauth2", "Листает Shikimori"),
-        ];
-        for (uri, expected) in cases {
-            let activity = page_activity(uri);
-            assert_eq!(activity, expected, "{uri}");
-            assert!(!activity.contains("secret") && !activity.contains("SomeUser"));
-        }
     }
 }
