@@ -74,6 +74,20 @@ internal sealed class AnivoxCore : IDisposable
     private static extern int anivox_clear_history(IntPtr anivox, out IntPtr result);
 
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int anivox_shikimori_start_url(
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? contentUri,
+        out IntPtr result);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int anivox_is_shikimori_url([MarshalAs(UnmanagedType.LPUTF8Str)] string? uri);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int anivox_shikimori_activity(
+        IntPtr anivox,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? pageUri,
+        out IntPtr result);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
     private static extern int anivox_content_script(
         [MarshalAs(UnmanagedType.LPUTF8Str)] string startupUrl,
         out IntPtr result);
@@ -190,6 +204,26 @@ internal sealed class AnivoxCore : IDisposable
     }
 
     public static string LogsDir => Path.Combine(DataDir, "logs");
+
+    /// <summary>The same title as the Anivox page (<c>/anime/&lt;id&gt;</c>) or the Shikimori home page.</summary>
+    public static string ShikimoriStartUrl(string? contentUri)
+    {
+        var code = anivox_shikimori_start_url(contentUri, out var result);
+        var text = Take(result);
+        return code == 0 ? JsonSerializer.Deserialize<string>(text) ?? "https://shikimori.io/" : "https://shikimori.io/";
+    }
+
+    public static bool IsShikimoriUrl(string? uri) => anivox_is_shikimori_url(uri) != 0;
+
+    /// <summary>
+    /// Discord shows the kind of Shikimori page while the overlay is open; null restores the
+    /// embedded player's status. Blocking: call it off the UI thread.
+    /// </summary>
+    public CoreResult SetShikimoriActivity(string? pageUri)
+    {
+        var code = anivox_shikimori_activity(_handle, pageUri, out var result);
+        return new CoreResult(code == 0, Take(result));
+    }
 
     public static string ContentScript(string startupUrl)
     {

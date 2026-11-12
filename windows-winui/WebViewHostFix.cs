@@ -15,7 +15,7 @@ internal static class WebViewHostFix
 {
     private const int GWL_EXSTYLE = -20;
     private const long WS_EX_TRANSPARENT = 0x20;
-    private const uint GW_CHILD = 5;
+    private const uint GW_HWNDNEXT = 2, GW_CHILD = 5;
     private const uint SWP_NOSIZE = 0x1, SWP_NOMOVE = 0x2, SWP_NOACTIVATE = 0x10, SWP_NOOWNERZORDER = 0x200;
 
     private delegate bool EnumProc(IntPtr hwnd, IntPtr lParam);
@@ -58,18 +58,34 @@ internal static class WebViewHostFix
 
     public static void Apply(IntPtr window)
     {
-        var host = FindWindowEx(window, IntPtr.Zero, "Chrome_WidgetWin_0", null);
-        if (host == IntPtr.Zero)
+        // Every WebView2 (site, Shikimori) is a Chrome_WidgetWin_0 child. Walk the children in
+        // z-order (top first): a host found below WinUI's input bridge is raised above it.
+        var bridgeSeen = false;
+        var below = new System.Collections.Generic.List<IntPtr>();
+        for (var child = GetWindow(window, GW_CHILD); child != IntPtr.Zero; child = GetWindow(child, GW_HWNDNEXT))
         {
-            return;
+            var cls = new StringBuilder(64);
+            GetClassName(child, cls, cls.Capacity);
+            switch (cls.ToString())
+            {
+                case "Microsoft.UI.Content.DesktopChildSiteBridge":
+                    bridgeSeen = true;
+                    break;
+                case "Chrome_WidgetWin_0":
+                    EnumChildWindows(child, ClearTransparent, IntPtr.Zero);
+                    if (bridgeSeen)
+                    {
+                        below.Add(child);
+                    }
+                    break;
+            }
         }
 
-        if (GetWindow(window, GW_CHILD) != host)
+        // Raise bottom-most first so the hosts keep their order among themselves.
+        for (var i = below.Count - 1; i >= 0; i--)
         {
-            SetWindowPos(host, IntPtr.Zero /* HWND_TOP */, 0, 0, 0, 0,
+            SetWindowPos(below[i], IntPtr.Zero /* HWND_TOP */, 0, 0, 0, 0,
                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
         }
-
-        EnumChildWindows(host, ClearTransparent, IntPtr.Zero);
     }
 }

@@ -9,6 +9,7 @@
 pub mod ipc;
 pub mod segments;
 pub mod session;
+pub mod shikimori;
 pub mod site_load;
 
 use anivox_core::player_settings::{load_player_settings, save_player_settings, PlayerSettings};
@@ -282,6 +283,39 @@ pub extern "C" fn anivox_settings_save(
 pub extern "C" fn anivox_clear_history(anivox: *const Anivox, out: *mut *mut c_char) -> i32 {
     guarded(out, || {
         handle(anivox)?.ipc.clear_playback_history()?;
+        Ok(Value::Null)
+    })
+}
+
+/// Shikimori overlay start page: the same title as the Anivox page, or the home page.
+#[no_mangle]
+pub extern "C" fn anivox_shikimori_start_url(
+    content_uri: *const c_char,
+    out: *mut *mut c_char,
+) -> i32 {
+    guarded(out, || {
+        Ok(Value::from(shikimori::start_url(read_str(content_uri))))
+    })
+}
+
+/// 1 when `uri` is on `https://shikimori.io` (the only origin that may close the overlay).
+#[no_mangle]
+pub extern "C" fn anivox_is_shikimori_url(uri: *const c_char) -> i32 {
+    read_str(uri).is_some_and(shikimori::is_shikimori) as i32
+}
+
+/// While the overlay shows `page_uri`, Discord shows only the kind of Shikimori
+/// page; null restores the embedded player's status. Blocking (Discord IPC).
+#[no_mangle]
+pub extern "C" fn anivox_shikimori_activity(
+    anivox: *const Anivox,
+    page_uri: *const c_char,
+    out: *mut *mut c_char,
+) -> i32 {
+    guarded(out, || {
+        let anivox = handle(anivox)?;
+        let activity = read_str(page_uri).map(shikimori::page_activity);
+        anivox.ipc.set_shikimori_activity(activity)?;
         Ok(Value::Null)
     })
 }

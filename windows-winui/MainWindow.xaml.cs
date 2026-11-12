@@ -32,6 +32,7 @@ public sealed partial class MainWindow : Window
     private readonly JsonObject _session;
     private readonly DispatcherQueueTimer _sessionTimer;
     private readonly TrayIcon _tray;
+    private CoreWebView2Environment? _env;
     private CoreWebView2Controller? _controller;
     private DispatcherQueueTimer? _hostFixTimer;
     private bool _fullScreen;
@@ -91,7 +92,7 @@ public sealed partial class MainWindow : Window
         {
             if (e.WindowActivationState != WindowActivationState.Deactivated)
             {
-                _controller?.MoveFocus(CoreWebView2MoveFocusReason.Programmatic);
+                (_shikimori ?? _controller)?.MoveFocus(CoreWebView2MoveFocusReason.Programmatic);
             }
         };
         Closed += (_, _) => Shutdown();
@@ -110,6 +111,7 @@ public sealed partial class MainWindow : Window
             "com.yasin.anivox.winui", "WebView2");
         var options = new CoreWebView2EnvironmentOptions { AdditionalBrowserArguments = BrowserArgs };
         var env = await CoreWebView2Environment.CreateWithOptionsAsync(null, userData, options);
+        _env = env;
 
         // Windowed hosting: WebView2 gets its own child HWND and DirectComposition tree, exactly
         // like Tauri/wry. Visual hosting (the XAML WebView2 control) breaks RTX VSR.
@@ -154,19 +156,32 @@ public sealed partial class MainWindow : Window
 
     private void UpdateBounds()
     {
-        if (_controller is null || ContentHost.XamlRoot is null)
+        if (_controller is not null)
+        {
+            PlaceOver(_controller, ContentHost);
+        }
+        if (_shikimori is not null)
+        {
+            PlaceOver(_shikimori, ShikimoriHost);
+        }
+    }
+
+    /// <summary>Puts a WebView2 HWND exactly over a XAML placeholder element.</summary>
+    private static void PlaceOver(CoreWebView2Controller controller, FrameworkElement host)
+    {
+        if (host.XamlRoot is null)
         {
             return;
         }
 
         // Controller bounds are in physical pixels relative to the window client area.
-        var scale = ContentHost.XamlRoot.RasterizationScale;
-        var offset = ContentHost.TransformToVisual(null).TransformPoint(new Windows.Foundation.Point(0, 0));
-        _controller.Bounds = new Windows.Foundation.Rect(
+        var scale = host.XamlRoot.RasterizationScale;
+        var offset = host.TransformToVisual(null).TransformPoint(new Windows.Foundation.Point(0, 0));
+        controller.Bounds = new Windows.Foundation.Rect(
             Math.Round(offset.X * scale),
             Math.Round(offset.Y * scale),
-            Math.Round(ContentHost.ActualWidth * scale),
-            Math.Round(ContentHost.ActualHeight * scale));
+            Math.Round(host.ActualWidth * scale),
+            Math.Round(host.ActualHeight * scale));
     }
 
     private void OnSourceChanged()
@@ -401,13 +416,30 @@ public sealed partial class MainWindow : Window
         if (args.DidPositionChange)
         {
             _controller.NotifyParentWindowPositionChanged();
+            _shikimori?.NotifyParentWindowPositionChanged();
         }
 
         if (args.DidPresenterChange || args.DidSizeChange || args.DidVisibilityChange)
         {
-            // Stop rendering while minimized or hidden in the tray, like a background tab.
-            var minimized = sender.Presenter is OverlappedPresenter p && p.State == OverlappedPresenterState.Minimized;
-            _controller.IsVisible = sender.IsVisible && !minimized;
+            UpdateWebViewVisibility();
+        }
+    }
+
+    /// <summary>
+    /// Stop rendering while minimized or hidden in the tray, like a background tab. While the
+    /// Shikimori overlay is open the site HWND is hidden too (XAML cannot cover it).
+    /// </summary>
+    private void UpdateWebViewVisibility()
+    {
+        var minimized = AppWindow.Presenter is OverlappedPresenter p && p.State == OverlappedPresenterState.Minimized;
+        var shown = AppWindow.IsVisible && !minimized;
+        if (_controller is not null)
+        {
+            _controller.IsVisible = shown && _shikimori is null;
+        }
+        if (_shikimori is not null)
+        {
+            _shikimori.IsVisible = shown;
         }
     }
 
@@ -468,6 +500,8 @@ public sealed partial class MainWindow : Window
     {
         FlushSession();
         _hostFixTimer?.Stop();
+        _shikimoriTimer?.Stop();
+        _shikimori?.Close();
         _controller?.Close();
         _tray.Dispose();
         // The core is not destroyed: a command may still run on the thread pool, and the
