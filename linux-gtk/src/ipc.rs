@@ -143,6 +143,11 @@ impl Ipc {
         &self.host
     }
 
+    /// Used by the native settings panel only; remote pages have no such command.
+    pub fn clear_playback_history(&self) -> Result<(), String> {
+        session::clear_playback_history(&self.host)
+    }
+
     pub fn handle(&self, command: &str, args: Value) -> Result<Value, String> {
         match command {
             "set_discord_rpc" => self.set_discord_rpc(args),

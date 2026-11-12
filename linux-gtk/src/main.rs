@@ -4,6 +4,7 @@
 
 mod ipc;
 mod session;
+mod settings;
 mod tray;
 mod vblank;
 
@@ -96,23 +97,12 @@ fn setup_ipc(
     webview: &WebView,
     window: &gtk4::ApplicationWindow,
     header: &gtk4::HeaderBar,
+    ipc: Arc<ipc::Ipc>,
+    rx: async_channel::Receiver<ipc::UiEvent>,
     restore_guard: Option<String>,
 ) {
     let Some(manager) = webview.user_content_manager() else {
         return;
-    };
-    let (tx, rx) = async_channel::unbounded();
-    let host = ipc::GtkHost::new(
-        tx,
-        glib::user_config_dir().join(APP_DIR),
-        glib::user_data_dir().join(APP_DIR),
-    );
-    let ipc = match ipc::Ipc::new(host) {
-        Ok(ipc) => Arc::new(ipc),
-        Err(err) => {
-            eprintln!("IPC недоступен: {err}");
-            return;
-        }
     };
 
     let status = gtk4::Label::new(None);
@@ -248,11 +238,18 @@ fn build_window(app: &gtk4::Application) {
     let webview = WebView::new();
     disable_60fps_preference(&webview);
 
-    let session = Rc::new(session::Session::open(
-        glib::user_config_dir()
-            .join(APP_DIR)
-            .join("session-gtk.json"),
-    ));
+    let config_dir = glib::user_config_dir().join(APP_DIR);
+    let data_dir = glib::user_data_dir().join(APP_DIR);
+    let session = Rc::new(session::Session::open(config_dir.join("session-gtk.json")));
+    let (ui_tx, ui_rx) = async_channel::unbounded();
+    let ipc = Arc::new(
+        ipc::Ipc::new(ipc::GtkHost::new(
+            ui_tx,
+            config_dir.clone(),
+            data_dir.clone(),
+        ))
+        .expect("не удалось запустить фоновые задачи"),
+    );
     let saved = session.data();
     let (width, height) = saved.size().unwrap_or((1280, 800));
     let window = gtk4::ApplicationWindow::builder()
@@ -277,6 +274,13 @@ fn build_window(app: &gtk4::Application) {
     for button in [&back, &forward, &reload, &home] {
         header.pack_start(button);
     }
+    header.pack_end(&settings::button(
+        &window,
+        &session,
+        &ipc,
+        config_dir.clone(),
+        data_dir.join("logs"),
+    ));
     window.set_titlebar(Some(&header));
 
     back.connect_clicked(glib::clone!(
@@ -357,6 +361,8 @@ fn build_window(app: &gtk4::Application) {
         &webview,
         &window,
         &header,
+        ipc,
+        ui_rx,
         session::restore_guard_script(&startup),
     );
     webview.load_uri(startup.as_str());
