@@ -4,6 +4,7 @@
 
 mod ipc;
 mod session;
+mod tray;
 mod vblank;
 
 use anivox_core::site_hosts;
@@ -233,7 +234,8 @@ fn main() -> glib::ExitCode {
     let app = gtk4::Application::builder().application_id(APP_ID).build();
     // GApplication is single-instance: a second launch re-activates the first.
     app.connect_activate(|app| {
-        if let Some(window) = app.active_window() {
+        // The window may be hidden in the tray: show it instead of a second one.
+        if let Some(window) = app.windows().into_iter().next() {
             window.present();
             return;
         }
@@ -265,6 +267,7 @@ fn build_window(app: &gtk4::Application) {
         window.maximize();
     }
     track_session(&window, &webview, &session);
+    setup_tray(app, &window, &session);
 
     let header = gtk4::HeaderBar::new();
     let back = gtk4::Button::from_icon_name("go-previous-symbolic");
@@ -358,6 +361,96 @@ fn build_window(app: &gtk4::Application) {
     );
     webview.load_uri(startup.as_str());
     window.present();
+}
+
+/// Tray icon with "Открыть / Сворачивать в трей / Выход". While the icon is
+/// shown and the preference is on, the close button hides the window; the
+/// application exits only from the tray menu.
+fn setup_tray(
+    app: &gtk4::Application,
+    window: &gtk4::ApplicationWindow,
+    session: &Rc<session::Session>,
+) {
+    let path = glib::user_config_dir().join(APP_DIR).join("tray.json");
+    let minimize = Rc::new(Cell::new(tray::load_preference(&path)));
+    let online = Rc::new(Cell::new(false));
+    let handle: Rc<std::cell::RefCell<Option<tray::TrayHandle>>> = Rc::default();
+
+    window.connect_close_request(glib::clone!(
+        #[strong]
+        minimize,
+        #[strong]
+        online,
+        move |window| {
+            if online.get() && minimize.get() {
+                window.set_visible(false);
+                glib::Propagation::Stop
+            } else {
+                glib::Propagation::Proceed
+            }
+        }
+    ));
+
+    let flush = glib::clone!(
+        #[strong]
+        session,
+        move || {
+            if let Err(err) = session.flush() {
+                eprintln!("Не удалось сохранить сеанс: {err}");
+            }
+        }
+    );
+    tray::start(
+        minimize.get(),
+        glib::clone!(
+            #[strong]
+            handle,
+            #[strong]
+            online,
+            move |result| match result {
+                Ok(tray) => {
+                    online.set(true);
+                    *handle.borrow_mut() = Some(tray);
+                }
+                Err(err) => eprintln!("Значок в трее недоступен: {err}"),
+            }
+        ),
+        glib::clone!(
+            #[weak]
+            app,
+            #[weak]
+            window,
+            move |event| match event {
+                tray::TrayEvent::Toggle if window.is_visible() => {
+                    flush();
+                    window.set_visible(false);
+                }
+                tray::TrayEvent::Toggle | tray::TrayEvent::Show => window.present(),
+                tray::TrayEvent::ToggleMinimize => {
+                    let enabled = !minimize.get();
+                    match anivox_core::tray_settings::save(&path, enabled) {
+                        Ok(()) => minimize.set(enabled),
+                        Err(err) => eprintln!("Не удалось сохранить настройку трея: {err}"),
+                    }
+                    let current = minimize.get();
+                    if let Some(tray) = handle.borrow().as_ref() {
+                        tray.update(|tray| tray.minimize_to_tray = current);
+                    }
+                }
+                tray::TrayEvent::Quit => {
+                    flush();
+                    app.quit();
+                }
+                tray::TrayEvent::Online(available) => {
+                    online.set(available);
+                    // Never leave a hidden window without a way back.
+                    if !available {
+                        window.present();
+                    }
+                }
+            }
+        ),
+    );
 }
 
 /// Keeps the session file up to date: the page on every navigation (SPA

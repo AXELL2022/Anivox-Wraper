@@ -21,3 +21,4 @@ async-channel = "2"
 tokio = { version = "1.53.1", features = ["rt-multi-thread"] }
 discord-rich-presence = "0.2.4"
 tempfile = "3"
+ksni = { version = "0.3", features = ["blocking"] }
