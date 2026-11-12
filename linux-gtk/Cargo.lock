@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "anivox-core"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "discord-rich-presence",
  "reqwest",
@@ -18,7 +18,7 @@ dependencies = [
 
 [[package]]
 name = "anivox-gtk"
-version = "0.4.3"
+version = "0.5.0"
 dependencies = [
  "anivox-core",
  "async-channel",

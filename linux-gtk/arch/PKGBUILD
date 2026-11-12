@@ -4,7 +4,7 @@
 # checkout instead of a tarball: run `makepkg -fi` inside linux-gtk/arch.
 # Installs next to the Tauri `anivox` package without file conflicts.
 pkgname=anivox-gtk
-pkgver=0.4.3
+pkgver=0.5.0
 pkgrel=1
 pkgdesc="Anivox Desktop - native GTK4 + WebKitGTK shell for anivox.fun (experimental)"
 arch=('x86_64')
