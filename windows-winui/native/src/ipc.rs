@@ -181,6 +181,11 @@ impl Ipc {
         &self.host
     }
 
+    /// Runs a future on the background runtime; call off the UI thread.
+    pub fn block_on<F: std::future::Future>(&self, future: F) -> F::Output {
+        self.runtime.block_on(future)
+    }
+
     pub fn segment_stats(&self) -> Option<SegmentStats> {
         self.host.0.segments.lock().ok()?.clone()
     }

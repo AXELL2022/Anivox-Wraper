@@ -61,6 +61,65 @@
                            MaxWidth="420" VerticalAlignment="Center" Visibility="Collapsed" />
             </StackPanel>
             <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center" Margin="0,0,4,0">
+                <!-- Appears when latest.json announces a newer version (port of GTK updater.rs). -->
+                <Button x:Name="UpdateButton" Visibility="Collapsed" Style="{StaticResource AccentButtonStyle}"
+                        Padding="10,4" AutomationProperties.Name="Обновление Anivox" Content="Обновление">
+                    <Button.Flyout>
+                        <Flyout x:Name="UpdateFlyout" Placement="BottomEdgeAlignedRight" ShouldConstrainToRootBounds="False">
+                            <StackPanel Width="440" Spacing="10">
+                                <TextBlock x:Name="UpdateTitle" Text="Обновление Anivox" Style="{StaticResource SubtitleTextBlockStyle}" />
+                                <TextBlock x:Name="UpdateCurrent" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                <Border CornerRadius="6" BorderThickness="1" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}"
+                                        Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+                                    <ScrollViewer MaxHeight="360" MinHeight="160" Padding="10,8">
+                                        <!-- Release notes as plain text, never rendered as HTML. -->
+                                        <TextBlock x:Name="UpdateNotes" TextWrapping="Wrap" IsTextSelectionEnabled="True" />
+                                    </ScrollViewer>
+                                </Border>
+                                <TextBlock x:Name="UpdateStatus" TextWrapping="Wrap" Text="Перед установкой ознакомьтесь с изменениями." />
+                                <StackPanel Orientation="Horizontal" Spacing="6">
+                                    <Button x:Name="UpdateOpen" Content="Открыть страницу обновления"
+                                            Style="{StaticResource AccentButtonStyle}" Click="OnUpdateOpen" />
+                                    <Button x:Name="UpdateRetry" Content="Проверить снова" Click="OnUpdateRetry" />
+                                    <Button Content="Позже" Click="OnUpdateLater" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Flyout>
+                    </Button.Flyout>
+                </Button>
+                <!-- Connection check: is it the user's internet or the video server? -->
+                <Button x:Name="ConnectionButton" ToolTipService.ToolTip="Проверить соединение: интернет или сайт"
+                        AutomationProperties.Name="Проверка соединения" Style="{StaticResource SubtleButtonStyle}" Padding="8,6">
+                    <FontIcon Glyph="&#xE701;" FontSize="14" />
+                    <Button.Flyout>
+                        <Flyout x:Name="ConnectionFlyout" Placement="BottomEdgeAlignedRight" ShouldConstrainToRootBounds="False"
+                                Opening="OnConnectionOpening" Closed="OnConnectionClosed">
+                            <StackPanel Width="360" Spacing="10">
+                                <TextBlock Text="Проверка соединения" Style="{StaticResource SubtitleTextBlockStyle}" />
+                                <Grid ColumnSpacing="12" RowSpacing="6">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Text="Ваш интернет" />
+                                    <TextBlock x:Name="ConnInternet" Grid.Column="1" Text="—" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                    <TextBlock Grid.Row="1" Text="Видео с сайта" />
+                                    <TextBlock x:Name="ConnVideo" Grid.Row="1" Grid.Column="1" Text="—" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                </Grid>
+                                <TextBlock x:Name="ConnDetail" Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="Collapsed" />
+                                <MenuFlyoutSeparator />
+                                <TextBlock x:Name="ConnVerdictTitle" Style="{StaticResource BodyStrongTextBlockStyle}" TextWrapping="Wrap" />
+                                <TextBlock x:Name="ConnVerdictText" TextWrapping="Wrap" />
+                                <Button x:Name="ConnRecheck" Content="Проверить снова" Click="OnConnectionRecheck" />
+                            </StackPanel>
+                        </Flyout>
+                    </Button.Flyout>
+                </Button>
                 <TextBlock x:Name="VersionText" Style="{StaticResource CaptionTextBlockStyle}" VerticalAlignment="Center"
                            Foreground="{ThemeResource TextFillColorTertiaryBrush}" ToolTipService.ToolTip="Версия Anivox" />
                 <Button x:Name="SettingsButton" ToolTipService.ToolTip="Настройки Anivox" AutomationProperties.Name="Настройки Anivox"
@@ -140,6 +199,42 @@
              the XAML WebView2 control uses visual hosting, where video does not get the
              DirectComposition overlay NVIDIA RTX VSR needs. -->
         <Border x:Name="ContentHost" Grid.Row="1" Background="#0F0F0F" />
+
+        <!-- Site recovery screen (port of GTK site_recovery.rs): shown after a 25 s timeout or a load error.
+             The site HWND is hidden meanwhile (XAML cannot cover it); a normal load only spins the title bar ring. -->
+        <Grid x:Name="RecoveryLayer" Grid.Row="1" Visibility="Collapsed" Background="#101018">
+            <StackPanel VerticalAlignment="Center" HorizontalAlignment="Center" Spacing="22" Margin="16">
+                <TextBlock Text="ANIVOX" HorizontalAlignment="Center" CharacterSpacing="400" FontWeight="Bold"
+                           FontSize="13" Foreground="#D3CEE8" />
+                <Border Width="420" Padding="40,34,40,28" CornerRadius="24" BorderThickness="1"
+                        BorderBrush="#12FFFFFF" Background="#E81A1923">
+                    <StackPanel Spacing="12">
+                        <ProgressRing x:Name="RecoverySpinner" Width="48" Height="48" IsActive="False" />
+                        <TextBlock Text="ВАШ МИР АНИМЕ" HorizontalAlignment="Center" CharacterSpacing="300"
+                                   FontWeight="Bold" FontSize="10" Foreground="#B5A3EE" />
+                        <TextBlock x:Name="RecoveryTitle" HorizontalAlignment="Center" TextAlignment="Center"
+                                   TextWrapping="Wrap" FontSize="26" FontWeight="SemiBold" Foreground="#F3F2FF" />
+                        <TextBlock x:Name="RecoveryDescription" HorizontalAlignment="Center" TextAlignment="Center"
+                                   TextWrapping="Wrap" FontSize="14" Foreground="#B3AFC3" />
+                        <Border x:Name="RecoveryDetailBox" CornerRadius="10" Padding="12,10" Background="#660F0E16"
+                                Visibility="Collapsed">
+                            <TextBlock x:Name="RecoveryDetail" TextWrapping="Wrap" FontSize="12" Foreground="#CBC5DF"
+                                       IsTextSelectionEnabled="True" />
+                        </Border>
+                        <StackPanel x:Name="RecoveryActions" Orientation="Horizontal" Spacing="8"
+                                    HorizontalAlignment="Center" Margin="0,12,0,0">
+                            <Button Content="Повторить загрузку" Style="{StaticResource AccentButtonStyle}" Click="OnRecoveryRetry" />
+                            <Button Content="На зеркало" Click="OnRecoveryMirror" />
+                            <Button Content="На главную" Click="OnRecoveryHome" />
+                        </StackPanel>
+                        <HyperlinkButton x:Name="RecoveryWait" Content="Продолжить ожидание" HorizontalAlignment="Center"
+                                         Click="OnRecoveryWait" />
+                    </StackPanel>
+                </Border>
+                <TextBlock Text="Anivox Desktop · Немного терпения — и можно смотреть" HorizontalAlignment="Center"
+                           FontSize="11" Foreground="#837D96" />
+            </StackPanel>
+        </Grid>
 
         <!-- Shikimori overlay. XAML cannot draw above a WebView2 HWND, so while it is open the site
              HWND is hidden (the page keeps running) and a dimmed snapshot of it is the backdrop. -->

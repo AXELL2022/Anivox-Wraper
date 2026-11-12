@@ -65,6 +65,7 @@ public sealed partial class MainWindow : Window
         _sessionTimer.Tick += (_, _) => FlushSession();
         InitPlayer();
         InitSettings();
+        InitUpdates();
 
         _tray = new TrayIcon(iconPath, _core.MinimizeToTray);
         _tray.Toggle += () =>
@@ -133,13 +134,14 @@ public sealed partial class MainWindow : Window
         core.NavigationStarting += (_, _) =>
         {
             Loading.IsActive = true;
-            _core.BeginLoad();
+            BeginLoadAttempt();
         };
-        core.NavigationCompleted += (_, _) =>
+        core.NavigationCompleted += (sender, args) =>
         {
             Loading.IsActive = false;
             UpdateNavButtons();
             WebViewHostFix.Apply(_hwnd);
+            OnSiteNavigationCompleted(sender, args);
         };
         core.DocumentTitleChanged += (_, _) =>
             Title = string.IsNullOrWhiteSpace(core.DocumentTitle) ? "Anivox" : core.DocumentTitle;
@@ -267,6 +269,9 @@ public sealed partial class MainWindow : Window
         {
             case "fullscreen":
                 SetFullScreen(value["on"]?.GetValue<bool>() == true);
+                break;
+            case "siteReady":
+                FinishLoadAttempt(value["generation"]?.GetValue<ulong>() ?? 0);
                 break;
             case "status":
                 ShowPlayerStatus(
@@ -435,7 +440,7 @@ public sealed partial class MainWindow : Window
         var shown = AppWindow.IsVisible && !minimized;
         if (_controller is not null)
         {
-            _controller.IsVisible = shown && _shikimori is null;
+            _controller.IsVisible = shown && _shikimori is null && !RecoveryVisible;
         }
         if (_shikimori is not null)
         {

@@ -88,6 +88,19 @@ internal sealed class AnivoxCore : IDisposable
         out IntPtr result);
 
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int anivox_connection_view(
+        IntPtr anivox,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? netJson,
+        int measuring,
+        out IntPtr result);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int anivox_measure_internet(IntPtr anivox, out IntPtr result);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int anivox_update_check(IntPtr anivox, out IntPtr result);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
     private static extern int anivox_content_script(
         [MarshalAs(UnmanagedType.LPUTF8Str)] string startupUrl,
         out IntPtr result);
@@ -204,6 +217,29 @@ internal sealed class AnivoxCore : IDisposable
     }
 
     public static string LogsDir => Path.Combine(DataDir, "logs");
+
+    /// <summary>Connection panel view (port of <c>ui/connection.js</c> verdicts) from the core.</summary>
+    public JsonObject? ConnectionView(JsonNode? net, bool measuring)
+    {
+        var code = anivox_connection_view(_handle, net?.ToJsonString(), measuring ? 1 : 0, out var result);
+        var text = Take(result);
+        return code == 0 ? JsonNode.Parse(text) as JsonObject : null;
+    }
+
+    /// <summary>Downloads a test file for up to six seconds. Blocking.</summary>
+    public JsonNode? MeasureInternet()
+    {
+        var code = anivox_measure_internet(_handle, out var result);
+        var text = Take(result);
+        return code == 0 ? JsonNode.Parse(text) : null;
+    }
+
+    /// <summary>Reads <c>latest.json</c>: <c>{update, current, releasePage}</c>. Blocking.</summary>
+    public CoreResult CheckUpdate()
+    {
+        var code = anivox_update_check(_handle, out var result);
+        return new CoreResult(code == 0, Take(result));
+    }
 
     /// <summary>The same title as the Anivox page (<c>/anime/&lt;id&gt;</c>) or the Shikimori home page.</summary>
     public static string ShikimoriStartUrl(string? contentUri)

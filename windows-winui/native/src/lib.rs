@@ -6,11 +6,13 @@
 //! and 1 on failure (out = error message). UI events arrive as JSON through the
 //! callback passed to [`anivox_create`], possibly on a background thread.
 
+pub mod connection;
 pub mod ipc;
 pub mod segments;
 pub mod session;
 pub mod shikimori;
 pub mod site_load;
+pub mod updater;
 
 use anivox_core::player_settings::{load_player_settings, save_player_settings, PlayerSettings};
 use anivox_core::site_hosts;
@@ -317,6 +319,53 @@ pub extern "C" fn anivox_shikimori_activity(
         let activity = read_str(page_uri).map(shikimori::page_activity);
         anivox.ipc.set_shikimori_activity(activity)?;
         Ok(Value::Null)
+    })
+}
+
+/// Connection panel state from the last internet measurement (`net_json`, null
+/// when none), whether a measurement runs, and fresh segment statistics.
+#[no_mangle]
+pub extern "C" fn anivox_connection_view(
+    anivox: *const Anivox,
+    net_json: *const c_char,
+    measuring: i32,
+    out: *mut *mut c_char,
+) -> i32 {
+    guarded(out, || {
+        let anivox = handle(anivox)?;
+        let net = match read_str(net_json) {
+            Some(text) if !text.is_empty() => {
+                Some(serde_json::from_str(text).map_err(|err| err.to_string())?)
+            }
+            _ => None,
+        };
+        let seg = connection::fresh(anivox.ipc.segment_stats(), connection::now_ms());
+        serde_json::to_value(connection::assess(net, measuring != 0, seg.as_ref()))
+            .map_err(|err| err.to_string())
+    })
+}
+
+/// Downloads a test file for up to six seconds: `{ok, mbps}`. Blocking.
+#[no_mangle]
+pub extern "C" fn anivox_measure_internet(anivox: *const Anivox, out: *mut *mut c_char) -> i32 {
+    guarded(out, || {
+        let anivox = handle(anivox)?;
+        let result = anivox.ipc.block_on(connection::measure_internet());
+        serde_json::to_value(result).map_err(|err| err.to_string())
+    })
+}
+
+/// Reads `latest.json`: `{update: {version, notes} | null, current, releasePage}`. Blocking.
+#[no_mangle]
+pub extern "C" fn anivox_update_check(anivox: *const Anivox, out: *mut *mut c_char) -> i32 {
+    guarded(out, || {
+        let anivox = handle(anivox)?;
+        let update = anivox.ipc.block_on(updater::check())?;
+        Ok(serde_json::json!({
+            "update": update,
+            "current": updater::CURRENT,
+            "releasePage": updater::RELEASE_PAGE,
+        }))
     })
 }
 
