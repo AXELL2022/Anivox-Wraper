@@ -18,6 +18,10 @@ const versions = {
   'src-tauri/tauri.conf.json': JSON.parse(read('src-tauri/tauri.conf.json')).version,
   'ui/index.html': first('ui/index.html', /class="brand">v([^<]+)</),
   'ui/toolbar-fragment.html': first('ui/toolbar-fragment.html', /class="brand">v([^<]+)</),
+  // Experimental native GTK shell: its interface shows CARGO_PKG_VERSION.
+  'linux-gtk/Cargo.toml': first('linux-gtk/Cargo.toml', /^version = "([^"]+)"$/m),
+  'linux-gtk/Cargo.lock': first('linux-gtk/Cargo.lock', /name = "anivox-gtk"\r?\nversion = "([^"]+)"/),
+  'linux-gtk/arch/PKGBUILD': first('linux-gtk/arch/PKGBUILD', /^pkgver=(\S+)$/m),
 };
 
 test('application version is identical in every release file', () => {

@@ -4,6 +4,7 @@
 
 mod connection;
 mod ipc;
+mod player_button;
 mod session;
 mod settings;
 mod shikimori;
@@ -42,22 +43,11 @@ const SITE_SCRIPTS: [&str; 7] = [
 ];
 const IPC_SHIM: &str = include_str!("../scripts/ipc-shim.js");
 
-/// Page-provided colors go into Pango markup: accept only `#rgb`/`#rrggbb[aa]`.
-fn safe_color(value: &str) -> &str {
-    let hex = value.strip_prefix('#').unwrap_or("");
-    if matches!(hex.len(), 3 | 6 | 8) && hex.bytes().all(|c| c.is_ascii_hexdigit()) {
-        value
-    } else {
-        "#cccccc"
-    }
-}
-
 /// Main-thread widgets that react to requests from the IPC worker threads.
 struct Shell {
     window: gtk4::ApplicationWindow,
     header: gtk4::HeaderBar,
-    status: gtk4::Label,
-    status_generation: Cell<u64>,
+    player: Rc<player_button::PlayerButton>,
     recovery: Rc<site_recovery::Recovery>,
     // Owns the overlay state; the toolbar button holds only a weak reference.
     _shikimori: Rc<shikimori::Shikimori>,
@@ -76,39 +66,9 @@ impl Shell {
                 color,
                 reset_after_ms,
                 detail,
-            } => self.show_status(&text, &color, reset_after_ms, detail.as_deref()),
-        }
-    }
-
-    fn show_status(
-        self: &Rc<Self>,
-        text: &str,
-        color: &str,
-        reset_after_ms: u64,
-        detail: Option<&str>,
-    ) {
-        let markup = format!(
-            "<span foreground=\"{}\">{}</span>",
-            safe_color(color),
-            glib::markup_escape_text(text)
-        );
-        self.status.set_markup(&markup);
-        self.status.set_tooltip_text(detail);
-        self.status.set_visible(true);
-        let mine = self.status_generation.get() + 1;
-        self.status_generation.set(mine);
-        if reset_after_ms > 0 {
-            let shell = Rc::downgrade(self);
-            glib::timeout_add_local_once(
-                std::time::Duration::from_millis(reset_after_ms),
-                move || {
-                    if let Some(shell) = shell.upgrade() {
-                        if shell.status_generation.get() == mine {
-                            shell.status.set_visible(false);
-                        }
-                    }
-                },
-            );
+            } => self
+                .player
+                .show_status(&text, &color, reset_after_ms, detail.as_deref()),
         }
     }
 }
@@ -278,6 +238,8 @@ fn build_window(app: &gtk4::Application) {
         header.pack_start(button);
     }
     let shikimori = shikimori::Shikimori::install(&overlay, &webview, &ipc);
+    let player = player_button::PlayerButton::new(&webview);
+    header.pack_start(&player.button);
     header.pack_start(&shikimori.button);
     header.pack_start(&updater::button(&ipc));
     let settings_button = settings::button(
@@ -290,15 +252,16 @@ fn build_window(app: &gtk4::Application) {
     header.pack_end(&settings_button);
     let connection_button = connection::button(&ipc);
     header.pack_end(&connection_button);
-    let status = gtk4::Label::new(None);
-    status.set_visible(false);
-    header.pack_end(&status);
+    let version = gtk4::Label::new(Some(&format!("v{}", env!("CARGO_PKG_VERSION"))));
+    version.add_css_class("dim-label");
+    version.set_tooltip_text(Some("Версия Anivox"));
+    header.pack_end(&version);
+    header.pack_end(&player.message);
     window.set_titlebar(Some(&header));
     let shell = Rc::new(Shell {
         window: window.clone(),
         header: header.clone(),
-        status,
-        status_generation: Cell::new(0),
+        player,
         recovery,
         _shikimori: shikimori,
     });
