@@ -36,7 +36,8 @@ public sealed partial class MainWindow : Window
     private CoreWebView2Controller? _controller;
     private DispatcherQueueTimer? _hostFixTimer;
     private bool _fullScreen;
-    private OverlappedPresenter? _windowed;
+    /// <summary>Window rectangle to return to when fullscreen ends.</summary>
+    private RectInt32? _windowedRect;
     private bool _exiting;
 
     private CoreWebView2? Core => _controller?.CoreWebView2;
@@ -307,32 +308,60 @@ public sealed partial class MainWindow : Window
 
     private void SetFullScreen(bool fullScreen)
     {
-        if (_fullScreen == fullScreen)
+        if (_fullScreen == fullScreen || AppWindow.Presenter is not OverlappedPresenter presenter)
         {
             return;
         }
         _fullScreen = fullScreen;
         TitleBar.Visibility = fullScreen ? Visibility.Collapsed : Visibility.Visible;
 
-        // Without this the switch plays the restore/maximize animations: the window visibly
-        // shrinks to its normal size and grows back.
-        WindowTransitions.Suspend(_hwnd, DispatcherQueue);
+        // Borderless window over the whole monitor instead of the FullScreen presenter: switching
+        // presenters (or leaving the maximized state) makes Windows restore the window to its
+        // normal size for a moment, which shows up as the window shrinking and growing back.
+        // The window keeps its state (maximized stays maximized), so nothing is animated.
         if (fullScreen)
         {
-            // Keep the windowed presenter: going back to it returns straight to its state
-            // (maximized stays maximized) and keeps its minimum size. A new Default presenter
-            // first restores the normal size and only then maximizes.
-            _windowed = AppWindow.Presenter as OverlappedPresenter;
-            AppWindow.SetPresenter(AppWindowPresenterKind.FullScreen);
-        }
-        else if (_windowed is not null)
-        {
-            AppWindow.SetPresenter(_windowed);
+            _windowedRect = new RectInt32(AppWindow.Position.X, AppWindow.Position.Y, AppWindow.Size.Width, AppWindow.Size.Height);
+            var monitor = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).OuterBounds;
+            presenter.SetBorderAndTitleBar(false, false);
+            AppWindow.MoveAndResize(monitor);
+            // A maximized window keeps invisible resize borders inside its rectangle; push them
+            // off the monitor so the client area (the site) covers it exactly.
+            var extraWidth = AppWindow.Size.Width - AppWindow.ClientSize.Width;
+            var extraHeight = AppWindow.Size.Height - AppWindow.ClientSize.Height;
+            if (extraWidth > 0 || extraHeight > 0)
+            {
+                AppWindow.MoveAndResize(new RectInt32(
+                    monitor.X - extraWidth / 2, monitor.Y - extraHeight / 2,
+                    monitor.Width + extraWidth, monitor.Height + extraHeight));
+            }
         }
         else
         {
-            AppWindow.SetPresenter(AppWindowPresenterKind.Default);
+            presenter.SetBorderAndTitleBar(true, true);
+            if (_windowedRect is RectInt32 rect)
+            {
+                AppWindow.MoveAndResize(rect);
+            }
+            _windowedRect = null;
         }
+        PlaceContentNow();
+    }
+
+    /// <summary>
+    /// Fits the site to the new client area right away: XAML lays out the new window size a few
+    /// frames later, and until then the site would be drawn in its old rectangle with black
+    /// around it. <see cref="UpdateBounds"/> settles the exact placement afterwards.
+    /// </summary>
+    private void PlaceContentNow()
+    {
+        if (_controller is null || ContentHost.XamlRoot is null)
+        {
+            return;
+        }
+        var client = AppWindow.ClientSize;
+        var top = _fullScreen ? 0 : Math.Round(TitleBar.Height * ContentHost.XamlRoot.RasterizationScale);
+        _controller.Bounds = new Windows.Foundation.Rect(0, top, client.Width, Math.Max(0, client.Height - top));
     }
 
     private void UpdateNavButtons()
