@@ -11,11 +11,6 @@ test('site host list has the main site and at least one mirror', () => {
   assert.ok(hosts.length >= 2);
 });
 
-test('remote capability covers every site host', () => {
-  const urls = JSON.parse(read('src-tauri/capabilities/default.json')).remote.urls;
-  assert.deepEqual(urls, hosts.map(host => `https://${host}/*`));
-});
-
 for (const script of ['site-lifecycle', 'common-styles', 'segment-monitor', 'player-fullscreen', 'inject-common', 'restore-paused']) {
   test(`${script}.js origin guard lists every site host`, () => {
     const source = read(`src-tauri/scripts/${script}.js`);

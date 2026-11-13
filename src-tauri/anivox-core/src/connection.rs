@@ -1,6 +1,6 @@
 //! Connection check: is it the user's internet or the video server?
 //!
-//! The verdict logic mirrors `ui/connection.js`: `segment-monitor.js` passively
+//! The verdict logic (ported from the former Tauri `ui/connection.js`): `segment-monitor.js` passively
 //! reports how video segments download, the native panel compares that with a
 //! download from speed.cloudflare.com. Shells only draw the [`View`].
 

@@ -19,6 +19,8 @@
     <DefineConstants>$(DefineConstants);DISABLE_XAML_GENERATED_MAIN</DefineConstants>
     <!-- Unpackaged exe: no MSIX, Windows App SDK runtime is copied next to the exe. -->
     <WindowsPackageType>None</WindowsPackageType>
+    <!-- Without it `dotnet publish` drops resources.pri and the compiled XAML (.xbf). -->
+    <EnableMsixTooling>true</EnableMsixTooling>
     <WindowsAppSDKSelfContained>true</WindowsAppSDKSelfContained>
     <SelfContained>true</SelfContained>
   </PropertyGroup>

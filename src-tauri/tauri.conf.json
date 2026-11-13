@@ -4,7 +4,7 @@
   "version": "0.5.0",
   "identifier": "com.yasin.anivox",
   "build": {
-    "frontendDist": "../ui"
+    "frontendDist": "https://anivox.fun/"
   },
   "app": {
     "withGlobalTauri": true,
@@ -14,7 +14,10 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["nsis", "msi"],
+    "targets": [
+      "app",
+      "dmg"
+    ],
     "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",

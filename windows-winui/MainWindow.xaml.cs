@@ -17,7 +17,7 @@ public sealed partial class MainWindow : Window
 {
     private const string HomeUrl = "https://anivox.fun/";
 
-    // Same flags as the Tauri build (src-tauri/src/lib.rs BROWSER_ARGS): NVIDIA RTX VSR / TrueHDR
+    // Same flags as the former Tauri Windows build (BROWSER_ARGS): NVIDIA RTX VSR / TrueHDR
     // through DirectComposition video overlays and hardware decoding.
     private const string BrowserArgs =
         "--use-angle=d3d11 --enable-features=NvidiaVpSuperResolution,NvidiaVpTrueHDR," +

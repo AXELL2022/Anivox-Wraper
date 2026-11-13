@@ -1,240 +1,91 @@
-name: Build and Release
+name: Build
+
+# Windows (WinUI 3) and Linux (GTK) builds on the self-hosted Windows runner;
+# GTK is built inside its WSL distribution. No release is published yet: the
+# native shells are still being tested. The Tauri Windows/Linux build was
+# retired; Tauri remains only for macOS (macos-minimal.yml).
 
 on:
   push:
     branches:
       - main
-    tags:
-      - 'v*'
   workflow_dispatch:
-    inputs:
-      release_tag:
-        description: Existing release tag to rebuild and publish (for example v0.3.0)
-        required: false
-        type: string
 
 concurrency:
-  group: ${{ github.workflow }}-${{ inputs.release_tag || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
-  contents: write
+  contents: read
+
+env:
+  # WSL distribution with Rust, gtk4, webkitgtk-6.0 and pkgconf installed.
+  WSL_DISTRO: cachyos
 
 jobs:
   build:
-    name: Build (${{ matrix.platform }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: [self-hosted, Windows, X64]
-            platform: windows
-            shell: powershell
-          - os: ubuntu-22.04
-            platform: linux
-            shell: bash
-
+    name: Build (WinUI + GTK)
     # Node.js 24 actions require self-hosted Actions Runner >= 2.327.1.
-    runs-on: ${{ matrix.os }}
+    runs-on: [self-hosted, Windows, X64]
     defaults:
       run:
-        shell: ${{ matrix.shell }}
+        shell: powershell
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
-        with:
-          ref: ${{ inputs.release_tag || github.ref }}
 
-      - name: Prepare Windows runner tools
-        if: matrix.platform == 'windows'
-        shell: powershell
-        run: |
-          $gitRoot = Split-Path (Split-Path (Get-Command git).Source -Parent) -Parent
-          $gitBin = Join-Path $gitRoot 'bin'
-          if (-not (Test-Path (Join-Path $gitBin 'bash.exe'))) {
-            throw 'Git Bash is required by the Rust toolchain action'
-          }
-          $gitBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          (Join-Path $env:USERPROFILE '.cargo\bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Setup isolated Bun on Windows
-        if: matrix.platform == 'windows'
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-ci-bun.ps1
-
-      - name: Setup Bun on Linux
-        if: matrix.platform == 'linux'
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version-file: .bun-version
+      - name: Add Cargo to PATH
+        run: (Join-Path $env:USERPROFILE '.cargo\bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Setup Node.js
         uses: actions/setup-node@v5
         with:
           node-version: 24
 
-      - name: Configure persistent Windows Rust builds
-        if: matrix.platform == 'windows'
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-ci-rust.ps1
-
-      - name: Setup Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-
-      - name: Rust Cache
-        if: matrix.platform == 'linux'
-        uses: swatinem/rust-cache@v2
-        with:
-          workspaces: src-tauri
-          # Windows retains its full local target; do not prune it for upload.
-          cache-bin: false
-
-      - name: Install Linux system dependencies
-        if: matrix.platform == 'linux'
+      # The runner machine has the .NET 10 SDK; setup-dotnet would install into Program Files.
+      - name: Check .NET SDK
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libxdo-dev \
-            libssl-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            libfuse2 \
-            libdbus-1-dev \
-            pkg-config
+          $version = dotnet --version
+          if ($LASTEXITCODE -or -not $version.StartsWith('10.')) { throw ".NET 10 SDK is required, found '$version'" }
 
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - name: Run unit tests
+      - name: Run JS tests
         run: node --test tests/*.test.mjs
 
-      - name: Run Rust tests
-        run: cargo test --locked --workspace --manifest-path src-tauri/Cargo.toml
-
       - name: Check Rust formatting
-        run: cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
-
-      - name: Check Rust compilation
-        run: cargo check --locked --workspace --manifest-path src-tauri/Cargo.toml
-
-      # Windows ships only the NSIS setup.exe and the MSI (see bundle.targets).
-      - name: Build Tauri application (Windows installers)
-        if: matrix.platform == 'windows'
-        run: bun run build
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
-      # Linux ships only the Arch package, which packs the plain binary: no AppImage/deb/rpm.
-      - name: Build Tauri application (Linux binary)
-        if: matrix.platform == 'linux'
-        run: bun run tauri build --no-bundle
-
-      - name: Prepare isolated Windows native-test executable
-        if: matrix.platform == 'windows'
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-native-ci.ps1
-
-      - name: Verify Windows window and taskbar icons
-        if: matrix.platform == 'windows'
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/windows_taskbar_icon.ps1 -Exe "$env:ANIVOX_NATIVE_TEST_EXE"
-
-      - name: Verify Windows single instance and visibility restoration
-        if: matrix.platform == 'windows'
-        # Windows may refuse foreground activation from a background runner on
-        # the developer's shared desktop. Keep strict focus checks for local runs.
-        run: powershell -NoProfile -ExecutionPolicy Bypass -File tests/windows_single_instance.ps1 -Exe "$env:ANIVOX_NATIVE_TEST_EXE" -SkipForegroundCheck
-
-      - name: Build Arch Linux package (.pkg.tar.zst)
-        if: matrix.platform == 'linux'
         run: |
-          docker run --rm -v "${{ github.workspace }}:/workspace" -w /workspace archlinux:latest bash -c '
-            set -euo pipefail
-            pacman -Sy --noconfirm --needed fakeroot binutils debugedit
-            useradd -m builder
-            chown -R builder:builder /workspace
-            su -s /bin/bash builder -c "cd /workspace && PKGDEST=/workspace makepkg -e -f --nodeps --noconfirm"
-            chmod -R a+rw /workspace
-            ls -la /workspace/*.pkg.tar.zst
-          '
+          cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo fmt --manifest-path windows-winui/native/Cargo.toml -- --check
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo fmt --manifest-path linux-gtk/Cargo.toml -- --check
 
-      # The updater manifest needs a signature for the Linux entry; the app only opens the release page there.
-      - name: Sign Arch Linux package
-        if: matrix.platform == 'linux'
+      - name: Test the shared core
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml -p anivox-core
+
+      - name: Test the WinUI native core
+        run: cargo test --locked --manifest-path windows-winui/native/Cargo.toml
+
+      # dotnet publish + NSIS (makensis on PATH, in Program Files or the Tauri bundler cache).
+      - name: Build WinUI installer
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File windows-winui/installer/build-installer.ps1
+
+      - name: Build and test GTK shell in WSL
         run: |
-          for package in *.pkg.tar.zst; do
-            bun run tauri signer sign "$package"
-          done
-        env:
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # wsl drops backslashes from arguments; wslpath accepts forward slashes.
+          $workspace = $env:GITHUB_WORKSPACE.Replace('\', '/')
+          $repo = "$(wsl -d $env:WSL_DISTRO -- wslpath -a $workspace)".Trim()
+          if ($LASTEXITCODE -or -not $repo) { throw "WSL distribution '$env:WSL_DISTRO' is not available" }
+          # Keep the target inside the Linux file system: building on /mnt is several times slower.
+          $script = "set -e; cd '$repo'; export CARGO_TARGET_DIR=`$HOME/.cache/anivox-gtk-ci; " +
+            "cargo build --locked --manifest-path linux-gtk/Cargo.toml; " +
+            "cargo test --locked --manifest-path linux-gtk/Cargo.toml"
+          wsl -d $env:WSL_DISTRO -- bash -lc $script
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
-      - name: Upload Windows Artifacts
-        if: matrix.platform == 'windows'
-        uses: actions/upload-artifact@v6
+      - name: Upload WinUI installer
+        uses: actions/upload-artifact@v4
         with:
-          name: anivox-windows
-          path: |
-            ${{ env.CARGO_TARGET_DIR }}/release/bundle/nsis/*-setup.exe
-            ${{ env.CARGO_TARGET_DIR }}/release/bundle/nsis/*-setup.exe.sig
-            ${{ env.CARGO_TARGET_DIR }}/release/bundle/msi/*.msi
-            ${{ env.CARGO_TARGET_DIR }}/release/bundle/msi/*.msi.sig
-          if-no-files-found: warn
-
-      - name: Upload Arch Linux Package (.pkg.tar.zst)
-        if: matrix.platform == 'linux'
-        uses: actions/upload-artifact@v6
-        with:
-          name: anivox-arch
-          path: |
-            *.pkg.tar.zst
-            *.pkg.tar.zst.sig
+          name: anivox-winui
+          path: windows-winui/installer/out/*_x64-setup.exe
           if-no-files-found: error
-
-  release:
-    name: Publish GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v') || startsWith(inputs.release_tag, 'v')
-    needs: build
-    # Pin the publishing environment; do not follow ubuntu-latest migrations.
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ inputs.release_tag || github.ref }}
-
-      - name: Download build artifacts
-        uses: actions/download-artifact@v7
-        with:
-          path: release-artifacts
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: 24
-
-      - name: Extract release notes from changelog
-        env:
-          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
-        run: node scripts/generate-updater-manifest.mjs --extract-notes
-
-      - name: Generate updater manifest (latest.json)
-        run: node scripts/generate-updater-manifest.mjs
-        env:
-          RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
-          REPO_NAME: ${{ github.repository }}
-
-      - name: Publish GitHub Release assets
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ inputs.release_tag || github.ref_name }}
-          body_path: release-notes.md
-          files: dist-release/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-

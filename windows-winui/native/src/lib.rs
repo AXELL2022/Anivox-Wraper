@@ -18,15 +18,19 @@ use serde_json::Value;
 use std::ffi::{c_char, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 /// Version of this shell, compared with the release manifest.
 const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub type EventCallback = extern "C" fn(event_json: *const c_char, user: *mut c_void);
+/// Download progress: bytes received and the total size (0 when unknown).
+pub type ProgressCallback = extern "C" fn(received: u64, total: u64, user: *mut c_void);
 
 /// Site scripts in the order the Tauri shell injects them on Windows
-/// (`src-tauri/src/lib.rs`), after the IPC shim and the restore guard.
+/// (the former Tauri Windows build), after the IPC shim and the restore guard.
 const SITE_SCRIPTS: [&str; 7] = [
     include_str!("../../../src-tauri/scripts/inject-windows.js"),
     include_str!("../../../src-tauri/scripts/mpv-session.js"),
@@ -40,6 +44,8 @@ const IPC_SHIM: &str = include_str!("../../scripts/ipc-shim.js");
 
 pub struct Anivox {
     ipc: ipc::Ipc,
+    /// Set by [`anivox_update_cancel`] to stop a running update download.
+    update_cancel: AtomicBool,
 }
 
 impl Anivox {
@@ -53,6 +59,11 @@ impl Anivox {
 
     fn settings_path(&self) -> PathBuf {
         self.ipc.host().config_dir().join("settings.json")
+    }
+
+    /// Downloaded installers: `updates` in the local data folder.
+    fn updates_dir(&self) -> PathBuf {
+        self.ipc.host().data_dir().join("updates")
     }
 }
 
@@ -132,7 +143,10 @@ pub extern "C" fn anivox_create(
             }
         });
         let ipc = ipc::Ipc::new(ipc::host(sink, config, data)).ok()?;
-        Some(Box::into_raw(Box::new(Anivox { ipc })))
+        Some(Box::into_raw(Box::new(Anivox {
+            ipc,
+            update_cancel: AtomicBool::new(false),
+        })))
     });
     created.ok().flatten().unwrap_or(std::ptr::null_mut())
 }
@@ -358,18 +372,76 @@ pub extern "C" fn anivox_measure_internet(anivox: *const Anivox, out: *mut *mut 
     })
 }
 
-/// Reads `latest.json`: `{update: {version, notes} | null, current, releasePage}`. Blocking.
+/// Reads `latest.json`: `{update: {version, notes, platforms} | null, installable, current,
+/// releasePage}`. `installable` says whether the release has a file this build may download
+/// and install itself. Blocking.
 #[no_mangle]
 pub extern "C" fn anivox_update_check(anivox: *const Anivox, out: *mut *mut c_char) -> i32 {
     guarded(out, || {
         let anivox = handle(anivox)?;
         let update = anivox.ipc.block_on(updater::check(CURRENT_VERSION))?;
+        let installable = update
+            .as_ref()
+            .is_some_and(|update| update.installable().is_some());
         Ok(serde_json::json!({
             "update": update,
+            "installable": installable,
             "current": CURRENT_VERSION,
             "releasePage": updater::RELEASE_PAGE,
         }))
     })
+}
+
+/// Checks the manifest again and, if it still announces `reviewed_json` (the `update` object
+/// the user read), downloads its installer and verifies the signature. Result: `{path}` for a
+/// verified installer, or `{changed: update | null, installable}` when the release changed and must be
+/// reviewed again. `progress` is called at most every 100 ms. Blocking; cancel with
+/// [`anivox_update_cancel`].
+#[no_mangle]
+pub extern "C" fn anivox_update_download(
+    anivox: *const Anivox,
+    reviewed_json: *const c_char,
+    progress: ProgressCallback,
+    user: *mut c_void,
+    out: *mut *mut c_char,
+) -> i32 {
+    guarded(out, || {
+        let anivox = handle(anivox)?;
+        let reviewed: updater::UpdateInfo =
+            serde_json::from_str(read_str(reviewed_json).unwrap_or(""))
+                .map_err(|_| "Нет просмотренного обновления".to_owned())?;
+        anivox.update_cancel.store(false, Ordering::Relaxed);
+        let mut last: Option<Instant> = None;
+        let report = |received: u64, total: Option<u64>| {
+            let done = total == Some(received);
+            if done || last.is_none_or(|at| at.elapsed() >= Duration::from_millis(100)) {
+                last = Some(Instant::now());
+                progress(received, total.unwrap_or(0), user);
+            }
+        };
+        let outcome = anivox.ipc.block_on(updater::download_reviewed(
+            &reviewed,
+            CURRENT_VERSION,
+            &anivox.updates_dir(),
+            report,
+            &anivox.update_cancel,
+        ))?;
+        Ok(match outcome {
+            updater::Download::Ready(path) => serde_json::json!({ "path": path }),
+            updater::Download::Changed(update) => serde_json::json!({
+                "installable": update.as_ref().is_some_and(|update| update.installable().is_some()),
+                "changed": update,
+            }),
+        })
+    })
+}
+
+/// Stops a running [`anivox_update_download`]; it then fails with "Загрузка отменена".
+#[no_mangle]
+pub extern "C" fn anivox_update_cancel(anivox: *const Anivox) {
+    if let Ok(anivox) = handle(anivox) {
+        anivox.update_cancel.store(true, Ordering::Relaxed);
+    }
 }
 
 /// Document-created script for the content webview (`startup_url` decides

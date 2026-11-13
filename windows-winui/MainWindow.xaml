@@ -77,12 +77,15 @@
                                     </ScrollViewer>
                                 </Border>
                                 <TextBlock x:Name="UpdateStatus" TextWrapping="Wrap" Text="Перед установкой ознакомьтесь с изменениями." />
+                                <ProgressBar x:Name="UpdateProgress" Visibility="Collapsed" Maximum="100" />
                                 <StackPanel Orientation="Horizontal" Spacing="6">
                                     <Button x:Name="UpdateOpen" Content="Открыть страницу обновления"
                                             Style="{StaticResource AccentButtonStyle}" Click="OnUpdateOpen" />
+                                    <Button x:Name="UpdateCancel" Content="Отмена" Visibility="Collapsed" Click="OnUpdateCancel" />
                                     <Button x:Name="UpdateRetry" Content="Проверить снова" Click="OnUpdateRetry" />
                                     <Button Content="Позже" Click="OnUpdateLater" />
                                 </StackPanel>
+                                <HyperlinkButton x:Name="UpdatePage" Content="Страница выпуска" Padding="0" Click="OnUpdatePage" />
                             </StackPanel>
                         </Flyout>
                     </Button.Flyout>

@@ -101,6 +101,11 @@ impl SiteHost {
         &self.0.config_dir
     }
 
+    /// Local data folder (MPV logs, downloaded updates).
+    pub fn data_dir(&self) -> &PathBuf {
+        &self.0.data_dir
+    }
+
     fn page(&self) -> Option<String> {
         self.0.page.lock().ok().and_then(|page| page.clone())
     }

@@ -261,7 +261,19 @@ fn build_window(app: &gtk4::Application) {
     let player = player_button::PlayerButton::new(&webview);
     header.pack_start(&player.button);
     header.pack_start(&shikimori.button);
-    header.pack_start(&updater::button(&ipc));
+    let quit_for_update: Rc<dyn Fn()> = Rc::new(glib::clone!(
+        #[strong]
+        session,
+        #[weak]
+        app,
+        move || {
+            if let Err(err) = session.flush() {
+                eprintln!("Не удалось сохранить сеанс: {err}");
+            }
+            app.quit();
+        }
+    ));
+    header.pack_start(&updater::button(&ipc, quit_for_update));
     let settings_button = settings::button(
         &window,
         &session,

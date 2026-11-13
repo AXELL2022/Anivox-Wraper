@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 const read = (path) => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
 
@@ -15,15 +15,13 @@ test('macOS config exposes only origin-scoped Discord IPC', () => {
   assert.deepEqual(config.bundle.targets, ['app', 'dmg']);
 });
 
-test('macOS uses a separate entry point and excludes legacy library', () => {
+test('Tauri builds only the macOS entry point, without the Windows/Linux library', () => {
   assert.match(read('src-tauri/src/main.rs'), /mod macos/);
   assert.match(read('src-tauri/src/main.rs'), /macos::run\(\)/);
-  assert.match(read('src-tauri/src/lib.rs'), /#!\[cfg\(not\(target_os = "macos"\)\)\]/);
+  assert.equal(existsSync(new URL('../src-tauri/src/lib.rs', import.meta.url)), false);
   const cargo = read('src-tauri/Cargo.toml');
-  const integrations = cargo.indexOf(`[target.'cfg(not(target_os = "macos"))'.dependencies]`);
-  assert.ok(integrations > 0);
-  assert.ok(cargo.indexOf('discord-rich-presence') < integrations);
-  assert.ok(cargo.indexOf('tauri-plugin-opener') > integrations);
+  assert.match(cargo, /discord-rich-presence/);
+  assert.doesNotMatch(cargo, /\[lib\]|tauri-plugin-opener|tauri-plugin-single-instance|cfg\(not\(target_os = "macos"\)\)/);
 });
 
 test('macOS backend excludes MPV and VPN and preserves reviewed updater', () => {

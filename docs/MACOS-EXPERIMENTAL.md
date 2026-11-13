@@ -1,6 +1,6 @@
 # Experimental minimal macOS build
 
-Branch: `experimental/macos-minimal`. This is a build experiment, not a tested macOS release.
+This is the only remaining Tauri build (Windows and Linux moved to `windows-winui/` and `linux-gtk/`). It is a build experiment, not a tested macOS release.
 
 ## Included
 
@@ -15,7 +15,7 @@ Branch: `experimental/macos-minimal`. This is a build experiment, not a tested m
 
 MPV, VPN/WireGuard, Shikimori overlay, custom Windows/Linux toolbar, tray integration, media mirroring and platform-specific video hacks.
 
-The macOS binary selects `src/macos.rs`; the legacy integration library is excluded on macOS. Discord helpers are shared with Windows/Linux. The automatically merged `tauri.macos.conf.json` selects only a narrow Discord capability for the `macos-main` webview at `https://anivox.fun/*`; the command additionally validates its caller. Other origins receive no native permissions. `inject-macos.js` adds portable UI and observes real player state without intercepting media requests or loading MPV scripts.
+The binary runs `src/macos.rs` (on other systems `main.rs` only prints a notice). Discord helpers come from the shared core (`anivox-core`). The automatically merged `tauri.macos.conf.json` selects only a narrow Discord capability for the `macos-main` webview at `https://anivox.fun/*`; the command additionally validates its caller. Other origins receive no native permissions. `inject-macos.js` adds portable UI and observes real player state without intercepting media requests or loading MPV scripts.
 
 ## Build
 

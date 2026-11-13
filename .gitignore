@@ -5,6 +5,8 @@ node_modules/
 pkg/
 /tmp
 backup_linux/
+backup_tauri/
+windows-winui/installer/out/
 *.log
 .superpowers/
 /superpowers/
@@ -12,3 +14,6 @@ backup_linux/
 /.agents/
 /.claude/settings.local.json
 /actions-runner/
+release-artifacts/
+dist-release/
+release-notes.md

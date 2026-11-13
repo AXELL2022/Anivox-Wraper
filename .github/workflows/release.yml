@@ -1,0 +1,121 @@
+name: Release
+
+# Publishes vX.Y.Z: the WinUI installer (Windows) and the GTK pacman package (Linux),
+# each signed with the release key (TAURI_SIGNING_PRIVATE_KEY, the key of the Tauri
+# updater), plus latest.json. Old Tauri Windows clients find the WinUI installer under
+# `windows-x86_64` and install it through their own updater (/P /UPDATE /R).
+# Runs on the self-hosted Windows runner because the GTK package is built in its WSL.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing tag to rebuild and publish (for example v0.6.0)
+        required: true
+        type: string
+
+concurrency:
+  group: release-${{ inputs.release_tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
+  # WSL distribution with Rust, gtk4, webkitgtk-6.0, pkgconf and base-devel (makepkg).
+  WSL_DISTRO: cachyos
+
+jobs:
+  release:
+    name: Build, sign and publish
+    runs-on: [self-hosted, Windows, X64]
+    defaults:
+      run:
+        shell: powershell
+
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Add Cargo to PATH
+        run: (Join-Path $env:USERPROFILE '.cargo\bin') | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Check that the tag matches the version
+        run: |
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ("v$version" -ne $env:RELEASE_TAG) { throw "Tag $env:RELEASE_TAG does not match version $version" }
+
+      - name: Run tests
+        run: |
+          node --test tests/*.test.mjs
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --locked --manifest-path src-tauri/Cargo.toml -p anivox-core
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          cargo test --locked --manifest-path windows-winui/native/Cargo.toml
+
+      - name: Extract release notes from CHANGELOG
+        run: node scripts/generate-updater-manifest.mjs --extract-notes
+
+      - name: Build WinUI installer
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File windows-winui/installer/build-installer.ps1
+
+      - name: Build GTK package in WSL
+        run: |
+          New-Item -ItemType Directory -Force release-artifacts/linux | Out-Null
+          # wsl drops backslashes from arguments; wslpath accepts forward slashes.
+          $workspace = $env:GITHUB_WORKSPACE.Replace('\', '/')
+          $repo = "$(wsl -d $env:WSL_DISTRO -- wslpath -a $workspace)".Trim()
+          if ($LASTEXITCODE -or -not $repo) { throw "WSL distribution '$env:WSL_DISTRO' is not available" }
+          # Build directory inside the Linux file system; the package lands in the checkout.
+          $script = "set -e; cd '$repo/linux-gtk/arch'; " +
+            "BUILDDIR=`$HOME/.cache/anivox-makepkg PKGDEST='$repo/release-artifacts/linux' makepkg -f --noconfirm"
+          wsl -d $env:WSL_DISTRO -- bash -lc $script
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Collect release files
+        run: |
+          New-Item -ItemType Directory -Force release-artifacts/windows | Out-Null
+          Copy-Item windows-winui/installer/out/Anivox_*_x64-setup.exe release-artifacts/windows/
+          Get-ChildItem release-artifacts -Recurse -File | ForEach-Object { "$($_.FullName) ($($_.Length) bytes)" }
+
+      - name: Sign release files
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          if (-not $env:TAURI_SIGNING_PRIVATE_KEY) { throw 'TAURI_SIGNING_PRIVATE_KEY is not set' }
+          $files = Get-ChildItem release-artifacts -Recurse -File | Where-Object { $_.Name -like '*_x64-setup.exe' -or $_.Name -like '*.pkg.tar.zst' }
+          if (@($files).Count -ne 2) { throw "Expected the installer and the package, found: $($files.Name -join ', ')" }
+          foreach ($file in $files) {
+            npx --yes @tauri-apps/cli@2.11.4 signer sign $file.FullName
+            if ($LASTEXITCODE) { throw "Signing failed for $($file.Name)" }
+          }
+
+      - name: Generate latest.json
+        env:
+          REPO_NAME: ${{ github.repository }}
+        run: node scripts/generate-updater-manifest.mjs
+
+      # The same signature check the apps run after download, with the published key.
+      - name: Verify signatures in latest.json
+        run: cargo run --locked --manifest-path src-tauri/Cargo.toml -p anivox-core --example verify_release -- dist-release/latest.json dist-release
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          body_path: release-notes.md
+          files: dist-release/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

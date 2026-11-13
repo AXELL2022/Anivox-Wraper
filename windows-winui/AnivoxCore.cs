@@ -100,6 +100,20 @@ internal sealed class AnivoxCore : IDisposable
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
     private static extern int anivox_update_check(IntPtr anivox, out IntPtr result);
 
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void ProgressCallback(ulong received, ulong total, IntPtr user);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int anivox_update_download(
+        IntPtr anivox,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string reviewedJson,
+        ProgressCallback progress,
+        IntPtr user,
+        out IntPtr result);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void anivox_update_cancel(IntPtr anivox);
+
     [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
     private static extern int anivox_content_script(
         [MarshalAs(UnmanagedType.LPUTF8Str)] string startupUrl,
@@ -218,7 +232,7 @@ internal sealed class AnivoxCore : IDisposable
 
     public static string LogsDir => Path.Combine(DataDir, "logs");
 
-    /// <summary>Connection panel view (port of <c>ui/connection.js</c> verdicts) from the core.</summary>
+    /// <summary>Connection panel view (verdicts from <c>anivox_core::connection</c>) from the core.</summary>
     public JsonObject? ConnectionView(JsonNode? net, bool measuring)
     {
         var code = anivox_connection_view(_handle, net?.ToJsonString(), measuring ? 1 : 0, out var result);
@@ -240,6 +254,33 @@ internal sealed class AnivoxCore : IDisposable
         var code = anivox_update_check(_handle, out var result);
         return new CoreResult(code == 0, Take(result));
     }
+
+    /// <summary>
+    /// Re-checks <c>latest.json</c> and, if it still announces the reviewed release (the
+    /// <c>update</c> object the user read), downloads its installer and verifies the signature:
+    /// <c>{path}</c>, or <c>{changed, installable}</c> when the release must be reviewed again.
+    /// <paramref name="progress"/> gets (received, total or 0) on a background thread. Blocking.
+    /// </summary>
+    public CoreResult DownloadUpdate(string reviewedJson, Action<ulong, ulong> progress)
+    {
+        ProgressCallback callback = (received, total, _) =>
+        {
+            try
+            {
+                progress(received, total);
+            }
+            catch (Exception)
+            {
+                // Never unwind into Rust.
+            }
+        };
+        var code = anivox_update_download(_handle, reviewedJson, callback, IntPtr.Zero, out var result);
+        GC.KeepAlive(callback);
+        return new CoreResult(code == 0, Take(result));
+    }
+
+    /// <summary>Stops a running <see cref="DownloadUpdate"/>.</summary>
+    public void CancelUpdate() => anivox_update_cancel(_handle);
 
     /// <summary>The same title as the Anivox page (<c>/anime/&lt;id&gt;</c>) or the Shikimori home page.</summary>
     public static string ShikimoriStartUrl(string? contentUri)

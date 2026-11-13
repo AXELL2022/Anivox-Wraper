@@ -1,2 +1,4 @@
-# Keep Rust source line endings consistent across Windows and Linux.
-src-tauri/src/lib.rs text eol=lf
+# Files used by makepkg/pacman on Linux must keep LF even in a Windows checkout
+# (the release builds the GTK package in WSL from the runner's checkout).
+linux-gtk/arch/PKGBUILD text eol=lf
+linux-gtk/data/* text eol=lf

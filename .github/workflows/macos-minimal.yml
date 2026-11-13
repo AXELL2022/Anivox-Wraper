@@ -1,8 +1,8 @@
-name: Experimental macOS Minimal
+name: macOS (Tauri)
 
 on:
   push:
-    branches: ['experimental/macos-minimal']
+    branches: ['main', 'experimental/macos-minimal']
   workflow_dispatch:
 
 permissions:

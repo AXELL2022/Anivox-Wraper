@@ -12,17 +12,15 @@ const first = (file, pattern) => {
 // The release process (CLAUDE.md, "Release") requires every file below to carry one version.
 const versions = {
   'package.json': JSON.parse(read('package.json')).version,
-  'PKGBUILD': first('PKGBUILD', /^pkgver=(\S+)$/m),
+  // Minimal macOS Tauri build.
   'src-tauri/Cargo.toml': first('src-tauri/Cargo.toml', /^version = "([^"]+)"$/m),
   'src-tauri/Cargo.lock': first('src-tauri/Cargo.lock', /name = "anivox"\r?\nversion = "([^"]+)"/),
   'src-tauri/tauri.conf.json': JSON.parse(read('src-tauri/tauri.conf.json')).version,
-  'ui/index.html': first('ui/index.html', /class="brand">v([^<]+)</),
-  'ui/toolbar-fragment.html': first('ui/toolbar-fragment.html', /class="brand">v([^<]+)</),
-  // Experimental native GTK shell: its interface shows CARGO_PKG_VERSION.
+  // Native GTK shell for Linux: its interface shows CARGO_PKG_VERSION.
   'linux-gtk/Cargo.toml': first('linux-gtk/Cargo.toml', /^version = "([^"]+)"$/m),
   'linux-gtk/Cargo.lock': first('linux-gtk/Cargo.lock', /name = "anivox-gtk"\r?\nversion = "([^"]+)"/),
   'linux-gtk/arch/PKGBUILD': first('linux-gtk/arch/PKGBUILD', /^pkgver=(\S+)$/m),
-  // Experimental WinUI 3 shell and its Rust core (anivox_ffi.dll).
+  // WinUI 3 shell for Windows and its Rust core (anivox_ffi.dll).
   'windows-winui/Anivox.WinUI.csproj': first('windows-winui/Anivox.WinUI.csproj', /<Version>([^<]+)<\/Version>/),
   'windows-winui/native/Cargo.toml': first('windows-winui/native/Cargo.toml', /^version = "([^"]+)"$/m),
   'windows-winui/native/Cargo.lock': first('windows-winui/native/Cargo.lock', /name = "anivox-ffi"\r?\nversion = "([^"]+)"/),

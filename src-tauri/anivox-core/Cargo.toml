@@ -15,6 +15,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
 tempfile = "3"
+base64 = "0.22"
+minisign-verify = "0.2"
 discord-rich-presence = "0.2.4"
 tokio = { version = "1.53.1", features = ["io-util", "net", "process", "time", "sync", "macros", "rt", "rt-multi-thread"], optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["json"], optional = true }

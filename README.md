@@ -1,30 +1,35 @@
 # Anivox Desktop
 
-Настольная оболочка для [anivox.fun](https://anivox.fun/) на Tauri v2 для Windows и Linux.
+Настольная оболочка для [anivox.fun](https://anivox.fun/). Три сборки на общем Rust-ядре
+(`src-tauri/anivox-core`) и общих скриптах сайта (`src-tauri/scripts`):
+
+| Система | Сборка | Каталог |
+| --- | --- | --- |
+| Windows | WinUI 3 (C#, .NET 10) + WebView2 | [`windows-winui/`](windows-winui/README.md) |
+| Linux | GTK4 + WebKitGTK 6.0 | [`linux-gtk/`](linux-gtk/README.md) |
+| macOS | минимальная сборка на Tauri v2 | [`src-tauri/`](docs/MACOS-EXPERIMENTAL.md) |
+
+Сборки WinUI и GTK пока тестируются; следующее обновление выйдет на них. Прежняя Tauri-версия для
+Windows и Linux больше не развивается: в репозитории от Tauri осталась только часть для macOS.
+Опубликованные сейчас установщики (последний — 0.4.3) — это ещё Tauri-версия; следующий выпуск переведёт её пользователей на Windows на WinUI через их же автообновление.
 
 ## Возможности
 
-- Независимая панель навигации: назад, вперёд, обновление страницы.
+- Панель навигации: назад, вперёд, обновить, домой.
 - Один экземпляр приложения: повторный запуск показывает существующее окно, включая скрытое в трей.
 - Открытие текущего видео в MPV с передачей позиции, заголовка, субтитров и HTTP-заголовков.
-- Discord Rich Presence для встроенного плеера и MPV: аниме, серия, постер и оставшееся время.
+- Discord Rich Presence для встроенного плеера и MPV: аниме, серия, постер, рейтинг Shikimori и оставшееся время.
 - Shikimori поверх сайта; закрытие не перезагружает Anivox.
 - Проверка соединения: определяет, что тормозит видео — ваш интернет или видео-сервер.
-- Сохранение размера, положения и последней страницы между запусками; экран восстановления, если сайт не загрузился.
+- Сохранение размера окна и последней страницы между запусками; экран восстановления, если сайт не загрузился.
 - Запоминание позиции просмотра в MPV с предложением продолжить с того же места.
-- Просмотр изменений перед установкой обновления, прогресс загрузки и перезапуск.
+- Проверка обновлений с показом изменений. Обновление скачивается и устанавливается из приложения: на Windows — установщиком, на Linux — через `pkexec pacman -U`. Файл принимается только с подписью ключа выпуска.
 
-## Установка и зависимости
-
-Готовые сборки находятся в [GitHub Releases](https://github.com/AXELL2022/Anivox-Wraper/releases). Публикуются только установщики; portable-версии, AppImage и deb нет.
-
-**Windows:** установщик `Anivox_<версия>_x64-setup.exe` или `Anivox_<версия>_x64_en-US.msi`. Требуется WebView2 Runtime. Для внешнего воспроизведения — MPV.
-
-**Linux (Arch):** пакет `anivox-<версия>-1-x86_64.pkg.tar.zst`, установка командой `sudo pacman -U anivox-*.pkg.tar.zst`. Зависимости пакета: GTK 3 и WebKitGTK 4.1; MPV (необязательно) устанавливается отдельно.
+Сборка для macOS умеет меньше: сайт, меню навигации, Discord и обновления (см. `docs/MACOS-EXPERIMENTAL.md`).
 
 ## MPV и журналы
 
-Нажмите ⚙ на панели. Выберите исполняемый файл MPV через «Обзор…» или укажите абсолютный путь, затем нажмите «Сохранить». Пустой путь означает поиск `mpv` в PATH. Сброс пути применяется после сохранения. Настройка действует при следующем открытии видео; существующий MPV не закрывается.
+Откройте настройки (⚙) и выберите исполняемый файл MPV или укажите абсолютный путь. Пустой путь означает поиск `mpv` в PATH. Сброс пути применяется после сохранения. Настройка действует при следующем открытии видео; существующий MPV не закрывается.
 
 Настройки хранятся в `settings.json` в каталоге конфигурации Anivox. Журналы создаются отдельно для каждого запуска в `logs` внутри локального каталога данных приложения. Полный путь к журналам отображается в настройках.
 
@@ -54,53 +59,50 @@
 
 ## Разработка
 
-Нужны Bun, актуальный stable Rust и системные зависимости Tauri v2. На Windows также нужны MSVC Build Tools и доступный `rust-lld.exe`, выбранный в `.cargo/config.toml`. Linux-зависимости перечислены в `.github/workflows/build.yml`.
+Нужен актуальный stable Rust. Дальше — по сборке:
 
-```sh
-bun install --frozen-lockfile
-bun run dev
-bun run build
-bun run build:arch
-bun run install:arch
-bun run tauri info
-```
-
-`bun run build` собирает установщики Windows (NSIS `setup.exe` и MSI) в `src-tauri/target/release/bundle/nsis/` и `bundle/msi/`; другие форматы отключены в `bundle.targets` файла `src-tauri/tauri.conf.json`. `bun run build:arch` на Linux собирает только бинарник (`tauri build --no-bundle`) и пакет `anivox-*.pkg.tar.zst` из `PKGBUILD` в корне репозитория.
+- **WinUI (Windows):** .NET 10 SDK, MSVC Build Tools и `rust-lld.exe` (выбран в `.cargo/config.toml`).
+  `dotnet build windows-winui/Anivox.WinUI.csproj -c Release` сам собирает Rust-ядро `anivox_ffi.dll`.
+- **GTK (Linux):** `gtk4`, `webkitgtk-6.0`, `pkgconf`.
+  `cargo build --manifest-path linux-gtk/Cargo.toml`; пакет Arch — `makepkg -fi` в `linux-gtk/arch`.
+  На Windows GTK-версию можно собрать и проверить в WSL.
+- **macOS (Tauri):** Bun и зависимости Tauri v2, `bun install --frozen-lockfile`, затем `bun run tauri build`.
 
 ## Проверки
 
 ```sh
 node --test tests/*.test.mjs
-cargo check --locked --manifest-path src-tauri/Cargo.toml
-cargo test --locked --manifest-path src-tauri/Cargo.toml
-cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+cargo test --locked --manifest-path src-tauri/Cargo.toml -p anivox-core
+cargo test --locked --manifest-path windows-winui/native/Cargo.toml
+cargo test --locked --manifest-path linux-gtk/Cargo.toml        # на Linux или в WSL
+cargo fmt --all --manifest-path src-tauri/Cargo.toml -- --check
+cargo fmt --manifest-path windows-winui/native/Cargo.toml -- --check
+cargo fmt --manifest-path linux-gtk/Cargo.toml -- --check
 ```
 
-После release-сборки на Windows, закрыв остальные экземпляры Anivox:
+Проверки Discord, MPV и удалённого сайта требуют соответствующих внешних программ и доступа к сервисам.
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File tests/windows_taskbar_icon.ps1 -Exe src-tauri/target/release/anivox.exe
-powershell -NoProfile -ExecutionPolicy Bypass -File tests/windows_single_instance.ps1 -Exe src-tauri/target/release/anivox.exe
-```
+## CI и выпуск
 
-В self-hosted CI для этих проверок отдельно собирается EXE с идентификатором `com.yasin.anivox.ci-native` и собственным профилем. Он не конфликтует с запущенным пользовательским Anivox. Исходный EXE восстанавливается с проверкой SHA-256; установщики и опубликованные артефакты сохраняют обычный идентификатор.
+`build.yml` работает на self-hosted runner с метками `self-hosted, Windows, X64` (каталог `actions-runner/`
+исключён из Git): JS-тесты, форматирование, тесты ядра и `anivox-ffi`, установщик WinUI (артефакт `anivox-winui`)
+и сборка с тестами GTK внутри WSL-дистрибутива `cachyos`. Выпуск — `release.yml`: по тегу `vX.Y.Z` на том же
+runner собираются установщик WinUI и пакет GTK (`makepkg` в WSL), оба подписываются ключом выпуска (секреты
+`TAURI_SIGNING_PRIVATE_KEY` и `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`), создаётся `latest.json`, все подписи
+проверяются так же, как их проверит приложение, и публикуется GitHub-релиз. Пользователи старой Tauri-версии для
+Windows получают установщик WinUI своим автообновлением. macOS в выпуск пока не входит. `macos-minimal.yml`
+собирает macOS-версию на GitHub-hosted runner и загружает только артефакты.
 
-Скрипты завершают только свои тестовые экземпляры. Проверки Discord, MPV и удалённого сайта требуют соответствующих внешних программ и доступа к сервисам.
-
-## Обновления и выпуск
-
-Значок обновления открывает окно с изменениями. «Позже» ничего не устанавливает; «Установить» повторно проверяет выбранную версию. Если вышла другая версия, приложение покажет её описание и запросит новое подтверждение. На Linux приложение не устанавливает обновление само: оно показывает изменения и открывает страницу релиза, откуда пакет `.pkg.tar.zst` ставится вручную.
-
-CI запускает JS- и Rust-тесты, проверяет форматирование и компиляцию на Windows/Linux. Windows использует runner с метками `self-hosted, Windows, X64` и проверяет значки и single-instance; Linux собирается на GitHub-hosted Ubuntu: собирается бинарник без бандлов и подписанный пакет Arch. На общем рабочем столе Windows CI использует `-SkipForegroundCheck`: проверяет завершение второго процесса, видимость и восстановление первого окна, но не требует активного фокуса, который Windows может запретить фоновому процессу. Локальный запуск теста без этого флага сохраняет строгую проверку фокуса. Каталог `actions-runner/` исключён из Git. Для тега `vX.Y.Z` описание берётся из секции `## [X.Y.Z]` в `CHANGELOG.md`. Один `release-notes.md` используется и для GitHub-релиза, и для поля `notes` в `latest.json`. Отсутствующая или пустая секция останавливает выпуск.
-
-Self-hosted Windows хранит Bun нужной версии и полные Cargo target-каталоги в `RUNNER_TOOL_CACHE/anivox`, вне очищаемого checkout. Основная сборка и EXE с тестовым идентификатором используют отдельные target-каталоги, чтобы не сбрасывать результаты друг друга. Windows не загружает и не очищает облачный Rust Cache; Linux продолжает его использовать. Cargo получает число задач по доступным логическим CPU; отладочные символы dev/test отключены только в CI. Перед выпуском удаляются лишь старые установщики, зависимости сохраняются. Первый запуск заполняет локальный кэш, последующие используют готовые результаты.
+Описание выпуска берётся из секции `## [X.Y.Z]` в `CHANGELOG.md` (`scripts/generate-updater-manifest.mjs`);
+тот же текст попадает в `latest.json`, который читают проверки обновлений всех сборок.
 
 ## Исходники
 
-- `src-tauri/src/lib.rs` — сборка приложения, окна, оверлей Shikimori и инициализирующие скрипты; остальная логика разнесена по модулям рядом: `discord.rs`, `mpv.rs`, `player_settings.rs`, `updater.rs`, `session.rs`, `site_recovery.rs`, `tray_settings.rs`, `local_overlay.rs`.
-- `src-tauri/scripts/` — общие и платформенные инъекции удалённого webview (`inject-common.js`, `player-fullscreen.js`, `common-styles.js`, `inject-windows.js`, `inject-linux.js` и др.).
-- `ui/` — локальная панель, Shikimori, настройки, проверка соединения и описание обновления.
-- `tests/` — JavaScript и Windows-интеграционные проверки; Rust-тесты лежат в `src-tauri/src/*_tests.rs` и встроенных модулях `#[cfg(test)]`.
-- `scripts/generate-updater-manifest.mjs` — извлечение changelog и создание манифеста.
+- `src-tauri/anivox-core/` — общее ядро: MPV, Discord, Shikimori, настройки, история, команды сайта, проверка соединения, обновления.
+- `src-tauri/scripts/` — скрипты, внедряемые в страницу сайта во всех сборках.
+- `windows-winui/` — сборка WinUI; `windows-winui/native/` — C ABI над ядром (`anivox_ffi.dll`).
+- `linux-gtk/` — сборка GTK.
+- `src-tauri/src/` — минимальное macOS-приложение на Tauri (`macos.rs`).
+- `tests/` — JavaScript-проверки скриптов сайта, macOS-сборки и синхронизации версий.
 
 Архитектура и правила разработки — в `CLAUDE.md`, история — в `CHANGELOG.md`.
