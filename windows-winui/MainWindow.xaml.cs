@@ -35,9 +35,9 @@ public sealed partial class MainWindow : Window
     private CoreWebView2Environment? _env;
     private CoreWebView2Controller? _controller;
     private DispatcherQueueTimer? _hostFixTimer;
-    private bool _fullScreen;
-    /// <summary>Window rectangle to return to when fullscreen ends.</summary>
-    private RectInt32? _windowedRect;
+    /// <summary>Hosts the site WebView2 while the player is in fullscreen; the main window stays as it is.</summary>
+    private PlayerFullscreenWindow? _playerWindow;
+    private bool _playerFullscreen;
     private bool _exiting;
 
     private CoreWebView2? Core => _controller?.CoreWebView2;
@@ -126,7 +126,14 @@ public sealed partial class MainWindow : Window
         WebViewHostFix.Apply(_hwnd);
         _hostFixTimer = DispatcherQueue.CreateTimer();
         _hostFixTimer.Interval = TimeSpan.FromSeconds(1);
-        _hostFixTimer.Tick += (_, _) => WebViewHostFix.Apply(_hwnd);
+        _hostFixTimer.Tick += (_, _) =>
+        {
+            WebViewHostFix.Apply(_hwnd);
+            if (_playerFullscreen && _playerWindow is not null)
+            {
+                WebViewHostFix.Apply(_playerWindow.Handle);
+            }
+        };
         _hostFixTimer.Start();
 
         var core = _controller.CoreWebView2;
@@ -147,7 +154,7 @@ public sealed partial class MainWindow : Window
         };
         core.DocumentTitleChanged += (_, _) =>
             Title = string.IsNullOrWhiteSpace(core.DocumentTitle) ? "Anivox" : core.DocumentTitle;
-        core.ContainsFullScreenElementChanged += (_, _) => SetFullScreen(core.ContainsFullScreenElement);
+        core.ContainsFullScreenElementChanged += (_, _) => SetPlayerFullscreen(core.ContainsFullScreenElement);
         core.NewWindowRequested += OnNewWindowRequested;
         core.WebMessageReceived += OnWebMessage;
 
@@ -160,7 +167,8 @@ public sealed partial class MainWindow : Window
 
     private void UpdateBounds()
     {
-        if (_controller is not null)
+        // In player fullscreen the WebView2 lives in its own window and fills it.
+        if (_controller is not null && !_playerFullscreen)
         {
             PlaceOver(_controller, ContentHost);
         }
@@ -270,7 +278,8 @@ public sealed partial class MainWindow : Window
         switch (value["type"]?.GetValue<string>())
         {
             case "fullscreen":
-                SetFullScreen(value["on"]?.GetValue<bool>() == true);
+                // player-fullscreen.js reports the same change WebView2 raises as
+                // ContainsFullScreenElementChanged; that event drives SetPlayerFullscreen.
                 break;
             case "siteReady":
                 FinishLoadAttempt(value["generation"]?.GetValue<ulong>() ?? 0);
@@ -306,63 +315,61 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private void SetFullScreen(bool fullScreen)
+    /// <summary>
+    /// Player fullscreen without touching the application window: the WebView2 moves into a
+    /// borderless popup over the monitor and back. Growing the main window instead showed it
+    /// stretched with the site still drawn at the old size, because the WebView2 child cannot
+    /// redraw in step with a resize of its parent.
+    /// </summary>
+    private void SetPlayerFullscreen(bool fullscreen)
     {
-        if (_fullScreen == fullScreen || AppWindow.Presenter is not OverlappedPresenter presenter)
+        if (_controller is null || _playerFullscreen == fullscreen)
         {
             return;
         }
-        _fullScreen = fullScreen;
-        TitleBar.Visibility = fullScreen ? Visibility.Collapsed : Visibility.Visible;
-
-        // Borderless window over the whole monitor instead of the FullScreen presenter: switching
-        // presenters (or leaving the maximized state) makes Windows restore the window to its
-        // normal size for a moment, which shows up as the window shrinking and growing back.
-        // The window keeps its state (maximized stays maximized), so nothing is animated.
-        if (fullScreen)
+        _playerFullscreen = fullscreen;
+        if (fullscreen)
         {
-            _windowedRect = new RectInt32(AppWindow.Position.X, AppWindow.Position.Y, AppWindow.Size.Width, AppWindow.Size.Height);
-            var monitor = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).OuterBounds;
-            presenter.SetBorderAndTitleBar(false, false);
-            AppWindow.MoveAndResize(monitor);
-            // A maximized window keeps invisible resize borders inside its rectangle; push them
-            // off the monitor so the client area (the site) covers it exactly.
-            var extraWidth = AppWindow.Size.Width - AppWindow.ClientSize.Width;
-            var extraHeight = AppWindow.Size.Height - AppWindow.ClientSize.Height;
-            if (extraWidth > 0 || extraHeight > 0)
+            if (_playerWindow is null)
             {
-                AppWindow.MoveAndResize(new RectInt32(
-                    monitor.X - extraWidth / 2, monitor.Y - extraHeight / 2,
-                    monitor.Width + extraWidth, monitor.Height + extraHeight));
+                _playerWindow = new PlayerFullscreenWindow(_hwnd, Title);
+                _playerWindow.CloseRequested += LeavePlayerFullscreen;
+                _playerWindow.FocusRequested += () => _controller?.MoveFocus(CoreWebView2MoveFocusReason.Programmatic);
             }
+            var monitor = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).OuterBounds;
+            _playerWindow.Show(monitor, Title);
+            _controller.ParentWindow = CoreWebView2ControllerWindowReference.CreateFromWindowHandle((ulong)_playerWindow.Handle);
+            _controller.Bounds = new Windows.Foundation.Rect(0, 0, monitor.Width, monitor.Height);
+            _controller.IsVisible = true;
+            WebViewHostFix.Apply(_playerWindow.Handle);
+            _controller.MoveFocus(CoreWebView2MoveFocusReason.Programmatic);
         }
         else
         {
-            presenter.SetBorderAndTitleBar(true, true);
-            if (_windowedRect is RectInt32 rect)
+            _controller.ParentWindow = CoreWebView2ControllerWindowReference.CreateFromWindowHandle((ulong)_hwnd);
+            UpdateBounds();
+            UpdateWebViewVisibility();
+            _playerWindow?.Hide();
+            WebViewHostFix.Apply(_hwnd);
+            if (AppWindow.IsVisible)
             {
-                AppWindow.MoveAndResize(rect);
+                Activate();
+                _controller.MoveFocus(CoreWebView2MoveFocusReason.Programmatic);
             }
-            _windowedRect = null;
         }
-        PlaceContentNow();
     }
 
-    /// <summary>
-    /// Fits the site to the new client area right away: XAML lays out the new window size a few
-    /// frames later, and until then the site would be drawn in its old rectangle with black
-    /// around it. <see cref="UpdateBounds"/> settles the exact placement afterwards.
-    /// </summary>
-    private void PlaceContentNow()
+    /// <summary>Ends the page's fullscreen (and with it the popup), e.g. on Alt+F4 or tray hide.</summary>
+    private void LeavePlayerFullscreen()
     {
-        if (_controller is null || ContentHost.XamlRoot is null)
+        if (!_playerFullscreen)
         {
             return;
         }
-        var client = AppWindow.ClientSize;
-        var top = _fullScreen ? 0 : Math.Round(TitleBar.Height * ContentHost.XamlRoot.RasterizationScale);
-        _controller.Bounds = new Windows.Foundation.Rect(0, top, client.Width, Math.Max(0, client.Height - top));
+        _ = Core?.ExecuteScriptAsync("document.fullscreenElement && document.exitFullscreen()");
+        SetPlayerFullscreen(false);
     }
+
 
     private void UpdateNavButtons()
     {
@@ -412,7 +419,7 @@ public sealed partial class MainWindow : Window
 
     private void RecordGeometry()
     {
-        if (_fullScreen || AppWindow.Presenter is not OverlappedPresenter presenter)
+        if (AppWindow.Presenter is not OverlappedPresenter presenter)
         {
             return;
         }
@@ -487,7 +494,7 @@ public sealed partial class MainWindow : Window
     {
         var minimized = AppWindow.Presenter is OverlappedPresenter p && p.State == OverlappedPresenterState.Minimized;
         var shown = AppWindow.IsVisible && !minimized;
-        if (_controller is not null)
+        if (_controller is not null && !_playerFullscreen)
         {
             _controller.IsVisible = shown && _shikimori is null && !RecoveryVisible;
         }
@@ -512,10 +519,7 @@ public sealed partial class MainWindow : Window
     private void HideToTray()
     {
         FlushSession();
-        if (_fullScreen)
-        {
-            SetFullScreen(false);
-        }
+        LeavePlayerFullscreen();
         AppWindow.Hide();
     }
 
@@ -557,6 +561,7 @@ public sealed partial class MainWindow : Window
         _shikimoriTimer?.Stop();
         _shikimori?.Close();
         _controller?.Close();
+        _playerWindow?.Dispose();
         _tray.Dispose();
         // The core is not destroyed: a command may still run on the thread pool, and the
         // process ends right after. MPV keeps running on purpose (Anivox never ends it).
