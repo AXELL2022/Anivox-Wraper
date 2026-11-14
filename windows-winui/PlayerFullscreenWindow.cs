@@ -17,6 +17,18 @@ internal sealed class PlayerFullscreenWindow : IDisposable
     private const uint WM_CLOSE = 0x0010, WM_SETFOCUS = 0x0007;
     private const uint SWP_SHOWWINDOW = 0x0040, SWP_FRAMECHANGED = 0x0020;
     private const int SW_HIDE = 0, BLACK_BRUSH = 4, IDC_ARROW = 32512;
+    private const uint SWP_NOACTIVATE = 0x0010, LWA_ALPHA = 0x2;
+    private const int GWL_EXSTYLE = -20;
+    private const long WS_EX_LAYERED = 0x80000;
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static extern IntPtr GetWindowLongPtr(IntPtr hwnd, int index);
+
+    [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
+    private static extern IntPtr SetWindowLongPtr(IntPtr hwnd, int index, IntPtr value);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetLayeredWindowAttributes(IntPtr hwnd, uint key, byte alpha, uint flags);
 
     private delegate IntPtr WndProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
 
@@ -115,13 +127,43 @@ internal sealed class PlayerFullscreenWindow : IDisposable
         _current = this;
     }
 
-    /// <summary>Covers <paramref name="monitor"/> (physical pixels) and takes the foreground.</summary>
-    public void Show(RectInt32 monitor, string title)
+    /// <summary>
+    /// Covers <paramref name="monitor"/> (physical pixels). <paramref name="transparent"/> shows it
+    /// fully transparent (layered, alpha 0) until <see cref="Reveal"/>: the WebView2 inside still
+    /// draws, so the window can appear only once the site is drawn at the new size.
+    /// </summary>
+    public void Show(RectInt32 monitor, string title, bool transparent)
     {
         SetWindowText(_hwnd, title);
+        SetLayered(transparent, 0);
         SetWindowPos(_hwnd, IntPtr.Zero /* HWND_TOP */, monitor.X, monitor.Y, monitor.Width, monitor.Height,
-            SWP_SHOWWINDOW | SWP_FRAMECHANGED);
-        SetForegroundWindow(_hwnd);
+            SWP_SHOWWINDOW | SWP_FRAMECHANGED | SWP_NOACTIVATE);
+    }
+
+    /// <summary>Makes a transparent window opaque again (plain, not layered).</summary>
+    public void Reveal() => SetLayered(false, 255);
+
+    /// <summary>Makes the window fully transparent again; the WebView2 inside keeps drawing.</summary>
+    public void Conceal() => SetLayered(true, 0);
+
+    public void Activate() => SetForegroundWindow(_hwnd);
+
+    /// <summary>Moves and resizes the window (screen pixels) without activating it.</summary>
+    public void MoveTo(RectInt32 rect) =>
+        SetWindowPos(_hwnd, IntPtr.Zero /* HWND_TOP */, rect.X, rect.Y, rect.Width, rect.Height, SWP_NOACTIVATE);
+
+    private void SetLayered(bool layered, byte alpha)
+    {
+        var ex = GetWindowLongPtr(_hwnd, GWL_EXSTYLE).ToInt64();
+        var next = layered ? ex | WS_EX_LAYERED : ex & ~WS_EX_LAYERED;
+        if (next != ex)
+        {
+            SetWindowLongPtr(_hwnd, GWL_EXSTYLE, new IntPtr(next));
+        }
+        if (layered)
+        {
+            SetLayeredWindowAttributes(_hwnd, 0, alpha, LWA_ALPHA);
+        }
     }
 
     public void Hide() => ShowWindow(_hwnd, SW_HIDE);

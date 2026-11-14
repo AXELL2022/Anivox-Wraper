@@ -201,7 +201,10 @@
         <!-- WebView2 is hosted as a child HWND over this area (windowed hosting, like Tauri):
              the XAML WebView2 control uses visual hosting, where video does not get the
              DirectComposition overlay NVIDIA RTX VSR needs. -->
-        <Border x:Name="ContentHost" Grid.Row="1" Background="#0F0F0F" />
+        <!-- PlayerSnapshot stands in for the site while its WebView2 moves to/from player fullscreen. -->
+        <Border x:Name="ContentHost" Grid.Row="1" Background="#0F0F0F">
+            <Image x:Name="PlayerSnapshot" Stretch="Fill" />
+        </Border>
 
         <!-- Site recovery screen (port of GTK site_recovery.rs): shown after a 25 s timeout or a load error.
              The site HWND is hidden meanwhile (XAML cannot cover it); a normal load only spins the title bar ring. -->

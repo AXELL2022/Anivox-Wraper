@@ -8,8 +8,10 @@ using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
+using Microsoft.UI.Xaml.Media.Imaging;
 using Microsoft.Web.WebView2.Core;
 using Windows.Graphics;
+using Windows.Storage.Streams;
 
 namespace Anivox.WinUI;
 
@@ -38,6 +40,8 @@ public sealed partial class MainWindow : Window
     /// <summary>Hosts the site WebView2 while the player is in fullscreen; the main window stays as it is.</summary>
     private PlayerFullscreenWindow? _playerWindow;
     private bool _playerFullscreen;
+    /// <summary>Bumped on every switch so a late step of an older switch stops.</summary>
+    private int _playerFullscreenGeneration;
     private bool _exiting;
 
     private CoreWebView2? Core => _controller?.CoreWebView2;
@@ -317,17 +321,20 @@ public sealed partial class MainWindow : Window
 
     /// <summary>
     /// Player fullscreen without touching the application window: the WebView2 moves into a
-    /// borderless popup over the monitor and back. Growing the main window instead showed it
-    /// stretched with the site still drawn at the old size, because the WebView2 child cannot
-    /// redraw in step with a resize of its parent.
+    /// borderless popup over the monitor and back. Every frame on screen is a finished one: a
+    /// WebView2 cannot redraw in step with a size change, so the popup stays transparent until
+    /// the site is drawn at the monitor size, and the main window shows a snapshot of the site
+    /// while its WebView2 is away. On exit the site is redrawn at its window size while still in
+    /// the popup (laid over the site area), then moves back without changing size.
     /// </summary>
-    private void SetPlayerFullscreen(bool fullscreen)
+    private async void SetPlayerFullscreen(bool fullscreen)
     {
         if (_controller is null || _playerFullscreen == fullscreen)
         {
             return;
         }
         _playerFullscreen = fullscreen;
+        var generation = ++_playerFullscreenGeneration;
         if (fullscreen)
         {
             if (_playerWindow is null)
@@ -336,27 +343,136 @@ public sealed partial class MainWindow : Window
                 _playerWindow.CloseRequested += LeavePlayerFullscreen;
                 _playerWindow.FocusRequested += () => _controller?.MoveFocus(CoreWebView2MoveFocusReason.Programmatic);
             }
+            await ShowSnapshotAsync();
+            if (generation != _playerFullscreenGeneration)
+            {
+                return;
+            }
             var monitor = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).OuterBounds;
-            _playerWindow.Show(monitor, Title);
+            _playerWindow.Show(monitor, Title, transparent: true);
             _controller.ParentWindow = CoreWebView2ControllerWindowReference.CreateFromWindowHandle((ulong)_playerWindow.Handle);
             _controller.Bounds = new Windows.Foundation.Rect(0, 0, monitor.Width, monitor.Height);
             _controller.IsVisible = true;
             WebViewHostFix.Apply(_playerWindow.Handle);
+            await WaitForFrameAsync();
+            if (generation != _playerFullscreenGeneration)
+            {
+                return;
+            }
+            _playerWindow.Reveal();
+            _playerWindow.Activate();
             _controller.MoveFocus(CoreWebView2MoveFocusReason.Programmatic);
         }
         else
         {
+            if (_playerWindow is not null && ContentScreenRect() is RectInt32 area)
+            {
+                _playerWindow.Conceal();
+                _playerWindow.MoveTo(area);
+                _controller.Bounds = new Windows.Foundation.Rect(0, 0, area.Width, area.Height);
+                await WaitForFrameAsync();
+                if (generation != _playerFullscreenGeneration)
+                {
+                    return;
+                }
+            }
             _controller.ParentWindow = CoreWebView2ControllerWindowReference.CreateFromWindowHandle((ulong)_hwnd);
             UpdateBounds();
             UpdateWebViewVisibility();
-            _playerWindow?.Hide();
             WebViewHostFix.Apply(_hwnd);
+            _playerWindow?.Hide();
+            PlayerSnapshot.Source = null;
             if (AppWindow.IsVisible)
             {
                 Activate();
                 _controller.MoveFocus(CoreWebView2MoveFocusReason.Programmatic);
             }
         }
+    }
+
+    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool ClientToScreen(IntPtr hwnd, ref NativePoint point);
+
+    /// <summary>The site area of the main window in screen pixels (where the WebView2 sits).</summary>
+    private RectInt32? ContentScreenRect()
+    {
+        if (ContentHost.XamlRoot is null)
+        {
+            return null;
+        }
+        var scale = ContentHost.XamlRoot.RasterizationScale;
+        var offset = ContentHost.TransformToVisual(null).TransformPoint(new Windows.Foundation.Point(0, 0));
+        var origin = new NativePoint();
+        if (!ClientToScreen(_hwnd, ref origin))
+        {
+            return null;
+        }
+        return new RectInt32(
+            origin.X + (int)Math.Round(offset.X * scale),
+            origin.Y + (int)Math.Round(offset.Y * scale),
+            (int)Math.Round(ContentHost.ActualWidth * scale),
+            (int)Math.Round(ContentHost.ActualHeight * scale));
+    }
+
+    /// <summary>Puts a picture of the site into its area and waits until XAML has drawn it.</summary>
+    private async Task ShowSnapshotAsync()
+    {
+        var core = Core;
+        if (core is null)
+        {
+            return;
+        }
+        try
+        {
+            using var stream = new InMemoryRandomAccessStream();
+            await core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Jpeg, stream);
+            stream.Seek(0);
+            var image = new BitmapImage();
+            await image.SetSourceAsync(stream);
+            PlayerSnapshot.Source = image;
+            await NextRenderAsync();
+            await NextRenderAsync();
+        }
+        catch (Exception)
+        {
+            // Without a picture the site area shows its plain background for a moment.
+        }
+    }
+
+    private static Task NextRenderAsync()
+    {
+        var done = new TaskCompletionSource();
+        void OnRendering(object? sender, object e)
+        {
+            Microsoft.UI.Xaml.Media.CompositionTarget.Rendering -= OnRendering;
+            done.TrySetResult();
+        }
+        Microsoft.UI.Xaml.Media.CompositionTarget.Rendering += OnRendering;
+        return done.Task;
+    }
+
+    /// <summary>
+    /// Waits until the page has drawn two animation frames after a size change (or 500 ms), so a
+    /// window is revealed only once the site is drawn at its new size.
+    /// </summary>
+    private async Task<bool> WaitForFrameAsync()
+    {
+        var core = Core;
+        if (core is null)
+        {
+            return false;
+        }
+        const string script = "{\"expression\":\"new Promise(r => requestAnimationFrame(() => requestAnimationFrame(() => r(1))))\",\"awaitPromise\":true}";
+        var frame = core.CallDevToolsProtocolMethodAsync("Runtime.evaluate", script).AsTask();
+        var done = await Task.WhenAny(frame, Task.Delay(500));
+        return done == frame && frame.IsCompletedSuccessfully;
     }
 
     /// <summary>Ends the page's fullscreen (and with it the popup), e.g. on Alt+F4 or tray hide.</summary>
@@ -369,6 +485,7 @@ public sealed partial class MainWindow : Window
         _ = Core?.ExecuteScriptAsync("document.fullscreenElement && document.exitFullscreen()");
         SetPlayerFullscreen(false);
     }
+
 
 
     private void UpdateNavButtons()
