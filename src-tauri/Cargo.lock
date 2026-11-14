@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "anivox"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "anivox-core",
  "discord-rich-presence",
@@ -57,7 +57,7 @@ dependencies = [
 
 [[package]]
 name = "anivox-core"
-version = "0.5.0"
+version = "0.5.1"
 dependencies = [
  "base64 0.22.1",
  "discord-rich-presence",

@@ -1,6 +1,6 @@
 [package]
 name = "anivox-gtk"
-version = "0.5.0"
+version = "0.5.1"
 description = "Anivox minimal native Linux shell: GTK4 + WebKitGTK 6.0"
 edition = "2021"
 publish = false
