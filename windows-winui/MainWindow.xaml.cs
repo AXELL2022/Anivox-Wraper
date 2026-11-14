@@ -36,6 +36,7 @@ public sealed partial class MainWindow : Window
     private CoreWebView2Controller? _controller;
     private DispatcherQueueTimer? _hostFixTimer;
     private bool _fullScreen;
+    private OverlappedPresenter? _windowed;
     private bool _exiting;
 
     private CoreWebView2? Core => _controller?.CoreWebView2;
@@ -312,7 +313,26 @@ public sealed partial class MainWindow : Window
         }
         _fullScreen = fullScreen;
         TitleBar.Visibility = fullScreen ? Visibility.Collapsed : Visibility.Visible;
-        AppWindow.SetPresenter(fullScreen ? AppWindowPresenterKind.FullScreen : AppWindowPresenterKind.Default);
+
+        // Without this the switch plays the restore/maximize animations: the window visibly
+        // shrinks to its normal size and grows back.
+        WindowTransitions.Suspend(_hwnd, DispatcherQueue);
+        if (fullScreen)
+        {
+            // Keep the windowed presenter: going back to it returns straight to its state
+            // (maximized stays maximized) and keeps its minimum size. A new Default presenter
+            // first restores the normal size and only then maximizes.
+            _windowed = AppWindow.Presenter as OverlappedPresenter;
+            AppWindow.SetPresenter(AppWindowPresenterKind.FullScreen);
+        }
+        else if (_windowed is not null)
+        {
+            AppWindow.SetPresenter(_windowed);
+        }
+        else
+        {
+            AppWindow.SetPresenter(AppWindowPresenterKind.Default);
+        }
     }
 
     private void UpdateNavButtons()
