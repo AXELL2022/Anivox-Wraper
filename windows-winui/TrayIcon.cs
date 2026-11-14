@@ -116,6 +116,16 @@ internal sealed class TrayIcon : IDisposable
     [DllImport("user32.dll")]
     private static extern int GetSystemMetrics(int index);
 
+    // uxtheme by ordinal (Windows 10 1903+): lets Win32 menus follow the system dark theme.
+    [DllImport("uxtheme.dll", EntryPoint = "#135")]
+    private static extern int SetPreferredAppMode(int mode);
+
+    [DllImport("uxtheme.dll", EntryPoint = "#136")]
+    private static extern void FlushMenuThemes();
+
+    [DllImport("uxtheme.dll", EntryPoint = "#133")]
+    private static extern bool AllowDarkModeForWindow(IntPtr hwnd, bool allow);
+
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
     private static extern IntPtr GetModuleHandle(string? name);
 
@@ -150,12 +160,32 @@ internal sealed class TrayIcon : IDisposable
         RegisterClassEx(ref cls);
         _hwnd = CreateWindowEx(0, cls.lpszClassName, "Anivox", 0, 0, 0, 0, 0, HWND_MESSAGE,
             IntPtr.Zero, instance, IntPtr.Zero);
+        UseSystemMenuTheme(_hwnd);
         // Explorer restarts drop every icon; this message asks to add them again.
         _taskbarCreated = RegisterWindowMessage("TaskbarCreated");
         const uint IMAGE_ICON = 1, LR_LOADFROMFILE = 0x10;
         _icon = LoadImage(IntPtr.Zero, iconPath, IMAGE_ICON, GetSystemMetrics(49), GetSystemMetrics(50),
             LR_LOADFROMFILE);
         Add();
+    }
+
+    /// <summary>
+    /// The tray menu is a plain Win32 menu, light by default. Allowing dark mode for the app
+    /// makes it follow the system theme, like Explorer's own menus.
+    /// </summary>
+    private static void UseSystemMenuTheme(IntPtr hwnd)
+    {
+        try
+        {
+            const int AllowDark = 1;
+            SetPreferredAppMode(AllowDark);
+            AllowDarkModeForWindow(hwnd, true);
+            FlushMenuThemes();
+        }
+        catch (Exception)
+        {
+            // Older Windows without these exports: the menu stays light.
+        }
     }
 
     private NotifyIconData Data() => new()

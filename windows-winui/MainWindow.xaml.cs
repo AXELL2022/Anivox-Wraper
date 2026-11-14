@@ -345,8 +345,9 @@ public sealed partial class MainWindow : Window
             }
             _windowedRect = null;
         }
-        // Without the presenter Windows does not always treat the window as fullscreen and may
-        // leave the taskbar over the video.
+        // Without the FullScreen presenter Windows does not always treat the window as fullscreen
+        // and leaves the taskbar (a topmost window) over the video: stay on top while fullscreen.
+        presenter.IsAlwaysOnTop = fullScreen;
         TaskbarFullscreen.Mark(_hwnd, fullScreen);
         PlaceContentNow();
     }
