@@ -36,10 +36,9 @@ public sealed partial class MainWindow : Window
     private CoreWebView2Controller? _controller;
     private DispatcherQueueTimer? _hostFixTimer;
     private bool _fullScreen;
-    /// <summary>Window rectangle to return to when fullscreen ends.</summary>
-    private RectInt32? _windowedRect;
-    /// <summary>Window style to restore when fullscreen ends.</summary>
-    private IntPtr _windowedStyle;
+    /// <summary>Client size of the window before fullscreen, for placing the site ahead of the exit.</summary>
+    private SizeInt32 _windowedClient;
+    private bool _windowedMaximized;
     /// <summary>Presenter (with its maximized state) to restore when fullscreen ends.</summary>
     private AppWindowPresenter? _windowedPresenter;
     private bool _exiting;
@@ -166,10 +165,10 @@ public sealed partial class MainWindow : Window
 
     private void UpdateBounds()
     {
-        if (_controller is not null)
-        {
-            PlaceOver(_controller, ContentHost);
-        }
+        // The site fills the window below the title bar (all of it while fullscreen). Placing it
+        // from the window size, not from the XAML layout, keeps it from jumping back for a few
+        // frames to the stale fullscreen layout after leaving fullscreen (and the other way round).
+        PlaceContentNow();
         if (_shikimori is not null)
         {
             PlaceOver(_shikimori, ShikimoriHost);
@@ -322,36 +321,49 @@ public sealed partial class MainWindow : Window
         TitleBar.Visibility = fullScreen ? Visibility.Collapsed : Visibility.Visible;
 
         // The shell decides whether a WinUI window is fullscreen from its AppWindow presenter, not
-        // from its size: a borderless window over the monitor with the Overlapped presenter stays
-        // an ordinary window, and the taskbar covered the video (worked around with "always on
-        // top", which kept other apps from opening over the video and broke after the Start
-        // menu). So the FullScreen presenter is used, but switching to it straight from a
-        // maximized window plays a Windows animation. The window is therefore first made
-        // borderless over the monitor in place (nothing visible changes afterwards) and only then
-        // switched; on exit the saved presenter (with its maximized state) comes back first and
-        // the frame and rectangle are restored. DWM transitions are off during the switch.
+        // from its size: with the Overlapped presenter the taskbar stays over the video. So the
+        // FullScreen presenter is used. Switching to it (and back) passes a maximized window
+        // through its normal rectangle and briefly shows the window frame; each step showed up
+        // as the window or the video jumping (measured by recording the screen). Therefore:
+        // - while the presenter switches in, the frame takes no space (WM_NCCALCSIZE), and the
+        //   normal rectangle of a maximized window is the monitor itself, so the steps are
+        //   invisible; the taskbar is told about the fullscreen window afterwards, because the
+        //   shell only notices it on a change it can see;
+        // - the window style is never changed by hand, so on exit the presenter brings the frame
+        //   back together with the maximized or normal state in a single step;
+        // - returning to a maximized window, the site gets its final place before the switch
+        //   (the presenter takes ~130 ms before anything moves): WebView2 re-lays the page out
+        //   late, and it would otherwise jump down under the title bar a few frames later.
+        // DWM transitions are off during the switch.
         TaskbarFullscreen.SuppressTransitions(_hwnd);
         if (fullScreen)
         {
-            _windowedRect = new RectInt32(AppWindow.Position.X, AppWindow.Position.Y, AppWindow.Size.Width, AppWindow.Size.Height);
-            var monitor = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).OuterBounds;
-            _windowedStyle = TaskbarFullscreen.Enter(_hwnd, monitor);
+            _windowedClient = AppWindow.ClientSize;
             _windowedPresenter = AppWindow.Presenter;
+            _windowedMaximized = _windowedPresenter is OverlappedPresenter { State: OverlappedPresenterState.Maximized };
+            var display = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest);
+            TaskbarFullscreen.Enter(_hwnd, display.OuterBounds, display.WorkArea);
             AppWindow.SetPresenter(AppWindowPresenterKind.FullScreen);
+            TaskbarFullscreen.Entered(_hwnd);
         }
         else
         {
+            if (_windowedMaximized && _controller is not null && ContentHost.XamlRoot is not null)
+            {
+                var top = Math.Round(TitleBar.Height * ContentHost.XamlRoot.RasterizationScale);
+                _controller.Bounds = new Windows.Foundation.Rect(
+                    0, top, _windowedClient.Width, Math.Max(0, _windowedClient.Height - top));
+            }
             AppWindow.SetPresenter(_windowedPresenter ?? OverlappedPresenter.Create());
             _windowedPresenter = null;
-            TaskbarFullscreen.Leave(_hwnd, _windowedStyle, _windowedRect);
-            _windowedRect = null;
+            TaskbarFullscreen.Leave(_hwnd);
         }
         PlaceContentNow();
     }
 
     /// <summary>
-    /// Fits the site to the new client area right away: XAML lays out the new window size a few
-    /// frames later. <see cref="UpdateBounds"/> settles the exact placement afterwards.
+    /// Fits the site to the client area below the title bar (all of it while fullscreen) right
+    /// away: XAML lays out a new window size a few frames later.
     /// </summary>
     private void PlaceContentNow()
     {

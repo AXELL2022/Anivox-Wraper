@@ -4,11 +4,9 @@ using System.Runtime.InteropServices;
 namespace Anivox.WinUI;
 
 /// <summary>
-/// Win32 helpers for the fullscreen player: the window loses its caption and resize frame and
-/// covers the monitor exactly (as tao, the Tauri window library, does), and the taskbar is told it
-/// is fullscreen (<c>ITaskbarList2::MarkFullscreenWindow</c>). For a WinUI window this alone does
-/// not convince the shell (it goes by the AppWindow presenter), so <see cref="MainWindow"/> also
-/// switches to the FullScreen presenter once the window is already in place.
+/// Win32 helpers that make the switch to and from the FullScreen presenter invisible (see
+/// <see cref="MainWindow"/>) and tell the taskbar that the window is fullscreen
+/// (<c>ITaskbarList2::MarkFullscreenWindow</c>).
 /// </summary>
 internal static class TaskbarFullscreen
 {
@@ -33,51 +31,122 @@ internal static class TaskbarFullscreen
 
     private static ITaskbarList2? _taskbar;
 
-    private const int GwlStyle = -16;
-    private const long WsOverlappedWindow = 0x00CF0000;
-    private const uint SwpNoZOrder = 0x0004;
-    private const uint SwpNoActivate = 0x0010;
-    private const uint SwpFrameChanged = 0x0020;
-    private const uint SwpNoOwnerZOrder = 0x0200;
-
-    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
-    private static extern IntPtr GetWindowLongPtr(IntPtr hwnd, int index);
+    private const int GwlpWndProc = -4;
+    private const uint WmNcCalcSize = 0x0083;
+    private const int SwShowMaximized = 3;
 
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")]
     private static extern IntPtr SetWindowLongPtr(IntPtr hwnd, int index, IntPtr value);
 
-    [DllImport("user32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int cx, int cy, uint flags);
+    [DllImport("user32.dll", EntryPoint = "CallWindowProcW")]
+    private static extern IntPtr CallWindowProc(IntPtr previous, IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
 
-    /// <summary>
-    /// Removes the caption and resize frame and puts the window exactly over <paramref name="monitor"/>.
-    /// The maximized state is kept, so nothing is restored or animated. Returns the old style for
-    /// <see cref="Leave"/>.
-    /// </summary>
-    public static IntPtr Enter(IntPtr hwnd, Windows.Graphics.RectInt32 monitor)
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetWindowPlacement(IntPtr hwnd, ref WindowPlacement placement);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPlacement(IntPtr hwnd, ref WindowPlacement placement);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeRect
     {
-        var style = GetWindowLongPtr(hwnd, GwlStyle);
-        SetWindowLongPtr(hwnd, GwlStyle, new IntPtr(style.ToInt64() & ~WsOverlappedWindow));
-        Place(hwnd, monitor);
-        Mark(hwnd, true);
-        return style;
+        public int Left, Top, Right, Bottom;
     }
 
-    /// <summary>Restores the window style saved by <see cref="Enter"/> and the window rectangle.</summary>
-    public static void Leave(IntPtr hwnd, IntPtr style, Windows.Graphics.RectInt32? rect)
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WindowPlacement
+    {
+        public int Length;
+        public int Flags;
+        public int ShowCmd;
+        public int MinX, MinY;
+        public int MaxX, MaxY;
+        public NativeRect NormalPosition;
+    }
+
+    private delegate IntPtr WindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    /// <summary>Kept alive for as long as the window uses it.</summary>
+    private static WindowProc? _windowProc;
+    private static IntPtr _previousWindowProc;
+    /// <summary>While set, the window frame takes no space: the client area is the whole window.</summary>
+    private static bool _noFrame;
+    /// <summary>The real normal rectangle while <see cref="Enter"/> replaced it with the monitor.</summary>
+    private static NativeRect? _savedNormal;
+
+    /// <summary>
+    /// Prepares the switch to the FullScreen presenter. The presenter first restores a maximized
+    /// window to its normal rectangle and then puts it over the monitor with its frame still on;
+    /// with the normal rectangle replaced by the monitor and the frame taking no space, neither
+    /// step changes what is on screen. Call <see cref="Entered"/> after the switch.
+    /// </summary>
+    public static void Enter(IntPtr hwnd, Windows.Graphics.RectInt32 monitor, Windows.Graphics.RectInt32 workArea)
+    {
+        HookWindowProc(hwnd);
+        _noFrame = true;
+
+        var placement = new WindowPlacement { Length = Marshal.SizeOf<WindowPlacement>() };
+        if (_savedNormal is null && GetWindowPlacement(hwnd, ref placement) && placement.ShowCmd == SwShowMaximized)
+        {
+            _savedNormal = placement.NormalPosition;
+            // The placement uses workspace coordinates (relative to the work area).
+            var left = monitor.X - (workArea.X - monitor.X);
+            var top = monitor.Y - (workArea.Y - monitor.Y);
+            placement.Flags = 0;
+            placement.NormalPosition = new NativeRect
+            {
+                Left = left,
+                Top = top,
+                Right = left + monitor.Width,
+                Bottom = top + monitor.Height,
+            };
+            SetWindowPlacement(hwnd, ref placement);
+        }
+    }
+
+    /// <summary>
+    /// Finishes the switch to the FullScreen presenter. The taskbar is told only now: the shell
+    /// looks at a window again when it visibly changes, and the switch no longer changes anything
+    /// visible, so without this the taskbar stayed over the video.
+    /// </summary>
+    public static void Entered(IntPtr hwnd)
+    {
+        _noFrame = false;
+        Mark(hwnd, true);
+    }
+
+    /// <summary>After the presenter switched back: the taskbar and the real normal rectangle return.</summary>
+    public static void Leave(IntPtr hwnd)
     {
         Mark(hwnd, false);
-        SetWindowLongPtr(hwnd, GwlStyle, style);
-        if (rect is Windows.Graphics.RectInt32 bounds)
+        if (_savedNormal is not NativeRect normal)
         {
-            Place(hwnd, bounds);
+            return;
         }
-        else
+        _savedNormal = null;
+        var placement = new WindowPlacement { Length = Marshal.SizeOf<WindowPlacement>() };
+        if (GetWindowPlacement(hwnd, ref placement) && placement.ShowCmd == SwShowMaximized)
         {
-            SetWindowPos(hwnd, IntPtr.Zero, 0, 0, 0, 0,
-                SwpNoZOrder | SwpNoActivate | SwpFrameChanged | SwpNoOwnerZOrder | 0x0001 | 0x0002);
+            // Only the rectangle "Restore" goes back to; the maximized window does not move.
+            placement.Flags = 0;
+            placement.NormalPosition = normal;
+            SetWindowPlacement(hwnd, ref placement);
         }
+    }
+
+    private static void HookWindowProc(IntPtr hwnd)
+    {
+        if (_windowProc is not null)
+        {
+            return;
+        }
+        _windowProc = (window, msg, wParam, lParam) =>
+            msg == WmNcCalcSize && wParam != IntPtr.Zero && _noFrame
+                ? IntPtr.Zero
+                : CallWindowProc(_previousWindowProc, window, msg, wParam, lParam);
+        _previousWindowProc = SetWindowLongPtr(hwnd, GwlpWndProc, Marshal.GetFunctionPointerForDelegate(_windowProc));
     }
 
     [DllImport("dwmapi.dll")]
@@ -104,10 +173,6 @@ internal static class TaskbarFullscreen
         };
         timer.Start();
     }
-
-    private static void Place(IntPtr hwnd, Windows.Graphics.RectInt32 rect) =>
-        SetWindowPos(hwnd, IntPtr.Zero, rect.X, rect.Y, rect.Width, rect.Height,
-            SwpNoZOrder | SwpNoActivate | SwpFrameChanged | SwpNoOwnerZOrder);
 
     private static void Mark(IntPtr hwnd, bool fullscreen)
     {
