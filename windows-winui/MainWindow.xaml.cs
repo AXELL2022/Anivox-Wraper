@@ -38,6 +38,10 @@ public sealed partial class MainWindow : Window
     private bool _fullScreen;
     /// <summary>Window rectangle to return to when fullscreen ends.</summary>
     private RectInt32? _windowedRect;
+    /// <summary>Window style to restore when fullscreen ends.</summary>
+    private IntPtr _windowedStyle;
+    /// <summary>Presenter (with its maximized state) to restore when fullscreen ends.</summary>
+    private AppWindowPresenter? _windowedPresenter;
     private bool _exiting;
 
     private CoreWebView2? Core => _controller?.CoreWebView2;
@@ -310,47 +314,38 @@ public sealed partial class MainWindow : Window
 
     private void SetFullScreen(bool fullScreen)
     {
-        if (_fullScreen == fullScreen || AppWindow.Presenter is not OverlappedPresenter presenter)
+        if (_fullScreen == fullScreen)
         {
             return;
         }
         _fullScreen = fullScreen;
         TitleBar.Visibility = fullScreen ? Visibility.Collapsed : Visibility.Visible;
 
-        // Borderless window over the whole monitor instead of the FullScreen presenter: switching
-        // presenters (or leaving the maximized state) makes Windows restore the window to its
-        // normal size for a moment, which shows up as the window shrinking and growing back.
-        // The window keeps its state (maximized stays maximized), so nothing is animated.
+        // The shell decides whether a WinUI window is fullscreen from its AppWindow presenter, not
+        // from its size: a borderless window over the monitor with the Overlapped presenter stays
+        // an ordinary window, and the taskbar covered the video (worked around with "always on
+        // top", which kept other apps from opening over the video and broke after the Start
+        // menu). So the FullScreen presenter is used, but switching to it straight from a
+        // maximized window plays a Windows animation. The window is therefore first made
+        // borderless over the monitor in place (nothing visible changes afterwards) and only then
+        // switched; on exit the saved presenter (with its maximized state) comes back first and
+        // the frame and rectangle are restored. DWM transitions are off during the switch.
+        TaskbarFullscreen.SuppressTransitions(_hwnd);
         if (fullScreen)
         {
             _windowedRect = new RectInt32(AppWindow.Position.X, AppWindow.Position.Y, AppWindow.Size.Width, AppWindow.Size.Height);
             var monitor = DisplayArea.GetFromWindowId(AppWindow.Id, DisplayAreaFallback.Nearest).OuterBounds;
-            presenter.SetBorderAndTitleBar(false, false);
-            AppWindow.MoveAndResize(monitor);
-            // A maximized window keeps invisible resize borders inside its rectangle; push them
-            // off the monitor so the client area (the site) covers it exactly.
-            var extraWidth = AppWindow.Size.Width - AppWindow.ClientSize.Width;
-            var extraHeight = AppWindow.Size.Height - AppWindow.ClientSize.Height;
-            if (extraWidth > 0 || extraHeight > 0)
-            {
-                AppWindow.MoveAndResize(new RectInt32(
-                    monitor.X - extraWidth / 2, monitor.Y - extraHeight / 2,
-                    monitor.Width + extraWidth, monitor.Height + extraHeight));
-            }
+            _windowedStyle = TaskbarFullscreen.Enter(_hwnd, monitor);
+            _windowedPresenter = AppWindow.Presenter;
+            AppWindow.SetPresenter(AppWindowPresenterKind.FullScreen);
         }
         else
         {
-            presenter.SetBorderAndTitleBar(true, true);
-            if (_windowedRect is RectInt32 rect)
-            {
-                AppWindow.MoveAndResize(rect);
-            }
+            AppWindow.SetPresenter(_windowedPresenter ?? OverlappedPresenter.Create());
+            _windowedPresenter = null;
+            TaskbarFullscreen.Leave(_hwnd, _windowedStyle, _windowedRect);
             _windowedRect = null;
         }
-        // Without the FullScreen presenter Windows does not always treat the window as fullscreen
-        // and leaves the taskbar (a topmost window) over the video: stay on top while fullscreen.
-        presenter.IsAlwaysOnTop = fullScreen;
-        TaskbarFullscreen.Mark(_hwnd, fullScreen);
         PlaceContentNow();
     }
 
