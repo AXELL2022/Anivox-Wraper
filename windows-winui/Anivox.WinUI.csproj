@@ -47,6 +47,10 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.WindowsAppSDK" Version="2.6.5" />
+    <!-- Newer than the WebView2 SDK the Windows App SDK brings (1.0.3719.77): with that one,
+         WebResourceRequested (ad blocking) crashed the app (0xc0000005) or hung it when
+         navigating quickly (Home, Back, Forward in a row). -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
     <PackageReference Include="Microsoft.Windows.SDK.BuildTools" Version="10.0.28000.2957" />
   </ItemGroup>
 </Project>
