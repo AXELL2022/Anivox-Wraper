@@ -1,6 +1,6 @@
 [package]
 name = "anivox-core"
-version = "0.5.1"
+version = "0.5.2"
 description = "Anivox platform-independent core: MPV, Discord presence, settings, history"
 authors = ["yasin"]
 edition = "2021"
