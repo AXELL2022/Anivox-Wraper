@@ -9,6 +9,9 @@ edition = "2021"
 default = ["net"]
 # MPV IPC (tokio), the native shells' site dispatcher, Shikimori/update/speed clients (reqwest). The macOS shell does not need them.
 net = ["dep:tokio", "dep:reqwest", "dep:rustls"]
+# Ad blocking engine (Brave adblock-rust); `adblock-webkit` adds the WebKit content blocker export.
+adblock = ["dep:adblock"]
+adblock-webkit = ["adblock", "adblock/content-blocking"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -20,4 +23,5 @@ minisign-verify = "0.2"
 discord-rich-presence = "0.2.4"
 tokio = { version = "1.53.1", features = ["io-util", "net", "process", "time", "sync", "macros", "rt", "rt-multi-thread"], optional = true }
 reqwest = { version = "0.13", default-features = false, features = ["json"], optional = true }
+adblock = { version = "0.13.5", default-features = false, features = ["embedded-domain-resolver", "full-regex-handling"], optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }

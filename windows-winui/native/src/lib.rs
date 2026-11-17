@@ -9,6 +9,7 @@
 pub mod ipc;
 pub mod session;
 
+use anivox_core::adblock;
 use anivox_core::connection;
 use anivox_core::player_settings::{load_player_settings, save_player_settings, PlayerSettings};
 use anivox_core::shikimori_overlay as shikimori;
@@ -19,7 +20,7 @@ use std::ffi::{c_char, c_void, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 /// Version of this shell, compared with the release manifest.
@@ -46,6 +47,9 @@ pub struct Anivox {
     ipc: ipc::Ipc,
     /// Set by [`anivox_update_cancel`] to stop a running update download.
     update_cancel: AtomicBool,
+    /// Ad blocker once the filter list is loaded (built on a background thread).
+    adblock: Arc<RwLock<Option<Arc<adblock::Blocker>>>>,
+    adblock_started: AtomicBool,
 }
 
 impl Anivox {
@@ -146,6 +150,8 @@ pub extern "C" fn anivox_create(
         Some(Box::into_raw(Box::new(Anivox {
             ipc,
             update_cancel: AtomicBool::new(false),
+            adblock: Arc::default(),
+            adblock_started: AtomicBool::new(false),
         })))
     });
     created.ok().flatten().unwrap_or(std::ptr::null_mut())
@@ -455,6 +461,72 @@ pub extern "C" fn anivox_content_script(startup_url: *const c_char, out: *mut *m
     })
 }
 
+/// Loads the cached ad filter list and refreshes it once a day on a background
+/// thread; until a list is ready nothing is blocked. Later calls do nothing.
+#[no_mangle]
+pub extern "C" fn anivox_adblock_start(anivox: *const Anivox) {
+    let Ok(anivox) = handle(anivox) else {
+        return;
+    };
+    if anivox.adblock_started.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    let slot = anivox.adblock.clone();
+    let dir = adblock::cache_dir(anivox.ipc.host().data_dir());
+    let _ = std::thread::Builder::new()
+        .name("adblock".into())
+        .spawn(move || {
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                adblock::load_and_refresh(&dir, ipc::USER_AGENT, |lists| {
+                    let blocker = Arc::new(adblock::Blocker::new(&lists));
+                    if let Ok(mut slot) = slot.write() {
+                        *slot = Some(blocker);
+                    }
+                })
+            }));
+        });
+}
+
+fn blocker(anivox: *const Anivox) -> Option<Arc<adblock::Blocker>> {
+    handle(anivox).ok()?.adblock.read().ok()?.clone()
+}
+
+/// 1 when the request should be cancelled. `source` is the page that made it,
+/// `kind` a lowercase WebView2 resource context (`script`, `image`, `xhr`,
+/// `subdocument`, `document`...). Fast enough for the UI thread.
+#[no_mangle]
+pub extern "C" fn anivox_adblock_check(
+    anivox: *const Anivox,
+    url: *const c_char,
+    source: *const c_char,
+    kind: *const c_char,
+) -> i32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        let (Some(blocker), Some(url)) = (blocker(anivox), read_str(url)) else {
+            return false;
+        };
+        blocker.should_block(
+            url,
+            read_str(source).unwrap_or(""),
+            read_str(kind).unwrap_or("other"),
+        )
+    }))
+    .unwrap_or(false) as i32
+}
+
+/// Element hiding style sheet for `page_url` (a JSON string, or null when none).
+#[no_mangle]
+pub extern "C" fn anivox_adblock_css(
+    anivox: *const Anivox,
+    page_url: *const c_char,
+    out: *mut *mut c_char,
+) -> i32 {
+    guarded(out, || {
+        let css = blocker(anivox).and_then(|blocker| blocker.hide_css(read_str(page_url)?));
+        Ok(css.map(Value::from).unwrap_or(Value::Null))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -512,20 +584,62 @@ mod tests {
         };
         let mut out = std::ptr::null_mut();
         assert_eq!(anivox_settings_load(anivox, &mut out), 0);
-        assert_eq!(text(out), r#"{"mirrorEmbedded":false,"mpvPath":null}"#);
+        assert_eq!(
+            text(out),
+            r#"{"blockAds":true,"mirrorEmbedded":false,"mpvPath":null}"#
+        );
 
         let missing = CString::new(r#"{"mpvPath":"C:\\nope\\mpv.exe"}"#).unwrap();
         assert_eq!(anivox_settings_save(anivox, missing.as_ptr(), &mut out), 1);
         assert!(text(out).contains("MPV"));
 
-        let ok = CString::new(r#"{"mpvPath":"  ","mirrorEmbedded":true}"#).unwrap();
+        let ok =
+            CString::new(r#"{"mpvPath":"  ","mirrorEmbedded":true,"blockAds":false}"#).unwrap();
         assert_eq!(anivox_settings_save(anivox, ok.as_ptr(), &mut out), 0);
         anivox_free(out);
         assert_eq!(anivox_settings_load(anivox, &mut out), 0);
-        assert_eq!(text(out), r#"{"mirrorEmbedded":true,"mpvPath":null}"#);
+        assert_eq!(
+            text(out),
+            r#"{"blockAds":false,"mirrorEmbedded":true,"mpvPath":null}"#
+        );
 
         assert_eq!(anivox_clear_history(anivox, &mut out), 0);
         anivox_free(out);
+        anivox_destroy(anivox);
+    }
+
+    #[test]
+    fn adblock_checks_after_the_cached_list_loads() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = adblock::cache_dir(&dir.path().join("d"));
+        std::fs::create_dir_all(&cache).unwrap();
+        let list = "[Adblock Plus 2.0]
+! Title: test
+||ads.example^
+anivox.fun##.promo
+";
+        std::fs::write(cache.join(adblock::LISTS[0].file), list).unwrap();
+        let config = CString::new(dir.path().join("c").to_string_lossy().as_ref()).unwrap();
+        let data = CString::new(dir.path().join("d").to_string_lossy().as_ref()).unwrap();
+        let anivox = anivox_create(config.as_ptr(), data.as_ptr(), ignore, std::ptr::null_mut());
+        let url = CString::new("https://ads.example/x.js").unwrap();
+        let page = CString::new("https://anivox.fun/").unwrap();
+        let kind = CString::new("script").unwrap();
+        assert_eq!(
+            anivox_adblock_check(anivox, url.as_ptr(), page.as_ptr(), kind.as_ptr()),
+            0
+        );
+        anivox_adblock_start(anivox);
+        let started = Instant::now();
+        while anivox_adblock_check(anivox, url.as_ptr(), page.as_ptr(), kind.as_ptr()) == 0 {
+            assert!(started.elapsed() < Duration::from_secs(10));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut out = std::ptr::null_mut();
+        assert_eq!(anivox_adblock_css(anivox, page.as_ptr(), &mut out), 0);
+        let css = unsafe { CStr::from_ptr(out) }.to_str().unwrap().to_owned();
+        anivox_free(out);
+        assert_eq!(css, r#"".promo{display:none!important}""#);
         anivox_destroy(anivox);
     }
 

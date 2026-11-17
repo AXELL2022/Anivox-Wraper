@@ -12,7 +12,7 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-anivox-core = { path = "../../src-tauri/anivox-core", features = ["net"] }
+anivox-core = { path = "../../src-tauri/anivox-core", features = ["net", "adblock"] }
 # TLS backend for the core HTTP clients (the core picks the ring provider).
 reqwest = { version = "0.13", default-features = false, features = ["rustls-no-provider"] }
 serde = { version = "1", features = ["derive"] }

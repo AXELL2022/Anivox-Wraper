@@ -74,6 +74,8 @@ public sealed partial class MainWindow
             _settingsLoading = true;
             MpvPath.Text = settings["mpvPath"]?.GetValue<string>() ?? "";
             MirrorEmbedded.IsChecked = settings["mirrorEmbedded"]?.GetValue<bool>() == true;
+            BlockAds.IsChecked = settings["blockAds"]?.GetValue<bool>() != false;
+            SiteStatus.Text = "";
             _settingsLoading = false;
             _settingsDirty = false;
             SettingsStatus.Text = "";
@@ -142,7 +144,12 @@ public sealed partial class MainWindow
     private void OnSaveSettings(object sender, RoutedEventArgs e)
     {
         var path = MpvPath.Text.Trim();
-        var result = _core.SavePlayerSettings(path.Length == 0 ? null : path, MirrorEmbedded.IsChecked == true);
+        var mirror = MirrorEmbedded.IsChecked == true;
+        var result = _core.UpdatePlayerSettings(settings =>
+        {
+            settings["mpvPath"] = path.Length == 0 ? null : path;
+            settings["mirrorEmbedded"] = mirror;
+        });
         if (result.Ok)
         {
             _settingsDirty = false;

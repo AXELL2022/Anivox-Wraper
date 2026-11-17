@@ -2,6 +2,7 @@
 //! navigation buttons and a WebKitGTK 6.0 view. No Tauri involved; the
 //! platform-independent logic comes from `anivox-core`.
 
+mod adblock;
 mod connection;
 mod ipc;
 mod player_button;
@@ -274,10 +275,16 @@ fn build_window(app: &gtk4::Application) {
         }
     ));
     header.pack_start(&updater::button(&ipc, quit_for_update));
+    let block_ads =
+        anivox_core::player_settings::load_player_settings(&config_dir.join("settings.json"))
+            .map(|settings| settings.block_ads)
+            .unwrap_or(true);
+    let adblock = adblock::Adblock::install(&webview, &data_dir, block_ads);
     let settings_button = settings::button(
         &window,
         &session,
         &ipc,
+        &adblock,
         config_dir.clone(),
         data_dir.join("logs"),
     );

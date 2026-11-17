@@ -10,7 +10,7 @@ publish = false
 [workspace]
 
 [dependencies]
-anivox-core = { path = "../src-tauri/anivox-core", features = ["net"] }
+anivox-core = { path = "../src-tauri/anivox-core", features = ["net", "adblock-webkit"] }
 gtk4 = { version = "0.11.5", features = ["v4_18"] }
 url = "2"
 webkit6 = { version = "0.6.1", features = ["gtk_v4_18", "v2_42"] }

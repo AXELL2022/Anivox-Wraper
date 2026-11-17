@@ -2,11 +2,23 @@
 
 use std::path::Path;
 
-#[derive(Clone, Default, serde::Deserialize, serde::Serialize)]
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct PlayerSettings {
     pub mpv_path: Option<String>,
     pub mirror_embedded: bool,
+    /// Ad blocking in the site webview (WinUI and GTK); on unless turned off.
+    pub block_ads: bool,
+}
+
+impl Default for PlayerSettings {
+    fn default() -> Self {
+        Self {
+            mpv_path: None,
+            mirror_embedded: false,
+            block_ads: true,
+        }
+    }
 }
 
 pub fn validate_mpv_path(value: Option<String>) -> Result<Option<String>, String> {
@@ -35,6 +47,7 @@ pub fn save_player_settings(path: &Path, settings: &PlayerSettings) -> Result<()
     let settings = PlayerSettings {
         mpv_path: validate_mpv_path(settings.mpv_path.clone())?,
         mirror_embedded: settings.mirror_embedded,
+        block_ads: settings.block_ads,
     };
     let parent = path.parent().ok_or("Не определён каталог настроек")?;
     std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;

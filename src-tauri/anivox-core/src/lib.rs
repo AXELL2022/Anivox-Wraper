@@ -3,6 +3,8 @@
 //! The Tauri shell (`src-tauri/src`) and any future native shell (WinUI 3,
 //! GTK4, SwiftUI) wire these modules to windows, webviews and file locations.
 
+#[cfg(feature = "adblock")]
+pub mod adblock;
 pub mod connection;
 pub mod discord_presence;
 pub mod player_settings;

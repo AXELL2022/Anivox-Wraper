@@ -119,6 +119,22 @@ internal sealed class AnivoxCore : IDisposable
         [MarshalAs(UnmanagedType.LPUTF8Str)] string startupUrl,
         out IntPtr result);
 
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    private static extern void anivox_adblock_start(IntPtr anivox);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int anivox_adblock_check(
+        IntPtr anivox,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string url,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? source,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string kind);
+
+    [DllImport(Dll, CallingConvention = CallingConvention.Cdecl)]
+    private static extern int anivox_adblock_css(
+        IntPtr anivox,
+        [MarshalAs(UnmanagedType.LPUTF8Str)] string? pageUrl,
+        out IntPtr result);
+
     private readonly EventCallback _callback; // kept alive while Rust holds the pointer
     private IntPtr _handle;
 
@@ -216,11 +232,36 @@ internal sealed class AnivoxCore : IDisposable
         return new CoreResult(code == 0, Take(result));
     }
 
-    public CoreResult SavePlayerSettings(string? mpvPath, bool mirrorEmbedded)
+    /// <summary>
+    /// Reads <c>settings.json</c>, applies <paramref name="change"/> and saves it, so fields edited
+    /// elsewhere (MPV path, ad blocking) are kept.
+    /// </summary>
+    public CoreResult UpdatePlayerSettings(Action<JsonObject> change)
     {
-        var json = new JsonObject { ["mpvPath"] = mpvPath, ["mirrorEmbedded"] = mirrorEmbedded };
-        var code = anivox_settings_save(_handle, json.ToJsonString(), out var result);
+        var loaded = LoadPlayerSettings();
+        if (!loaded.Ok)
+        {
+            return loaded;
+        }
+        var settings = JsonNode.Parse(loaded.Text) as JsonObject ?? new JsonObject();
+        change(settings);
+        var code = anivox_settings_save(_handle, settings.ToJsonString(), out var result);
         return new CoreResult(code == 0, Take(result));
+    }
+
+    /// <summary>Loads the cached ad filter list and refreshes it in the background (once).</summary>
+    public void StartAdblock() => anivox_adblock_start(_handle);
+
+    /// <summary>Whether a request should be cancelled; fast, safe on the UI thread.</summary>
+    public bool ShouldBlock(string url, string? source, string kind) =>
+        anivox_adblock_check(_handle, url, source, kind) != 0;
+
+    /// <summary>Hiding rules for the page as a style sheet, or null.</summary>
+    public string? AdblockCss(string? pageUrl)
+    {
+        var code = anivox_adblock_css(_handle, pageUrl, out var result);
+        var text = Take(result);
+        return code == 0 ? JsonSerializer.Deserialize<string?>(text) : null;
     }
 
     /// <summary>Deletes saved playback positions. Blocking: takes the history lock.</summary>

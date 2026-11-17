@@ -1,9 +1,10 @@
-//! Native settings popover: startup page, MPV path, embedded mirroring and
-//! clearing saved positions.
+//! Native settings popover: startup page, ad blocking, MPV path, embedded
+//! mirroring and clearing saved positions.
 //!
 //! The panel is a GTK widget of the shell itself, so remote pages have no IPC
 //! command for any of this: only this panel can choose or save the MPV path.
 
+use crate::adblock::Adblock;
 use crate::ipc::Ipc;
 use crate::session::{Session, StartupPage};
 use anivox_core::player_settings::{load_player_settings, save_player_settings, PlayerSettings};
@@ -18,6 +19,8 @@ struct Widgets {
     startup: gtk4::DropDown,
     path: gtk4::Entry,
     mirror: gtk4::CheckButton,
+    block_ads: gtk4::CheckButton,
+    site_status: gtk4::Label,
     status: gtk4::Label,
     session_status: gtk4::Label,
 }
@@ -51,6 +54,7 @@ pub fn button(
     window: &gtk4::ApplicationWindow,
     session: &Rc<Session>,
     ipc: &Arc<Ipc>,
+    adblock: &Rc<Adblock>,
     config_dir: PathBuf,
     logs_dir: PathBuf,
 ) -> gtk4::MenuButton {
@@ -82,6 +86,16 @@ pub fn button(
     ));
     let session_status = hint("");
     content.append(&session_status);
+
+    content.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
+    content.append(&heading("Сайт"));
+    let block_ads = gtk4::CheckButton::with_label("Блокировать рекламу");
+    content.append(&block_ads);
+    content.append(&hint(
+        "Фильтры RU AdList и EasyList обновляются раз в сутки.          Запросы самого сайта не блокируются.",
+    ));
+    let site_status = hint("");
+    content.append(&site_status);
 
     content.append(&gtk4::Separator::new(gtk4::Orientation::Horizontal));
     content.append(&heading("MPV"));
@@ -147,6 +161,8 @@ pub fn button(
         startup,
         path,
         mirror,
+        block_ads,
+        site_status,
         status,
         session_status,
     });
@@ -171,8 +187,12 @@ pub fn button(
             widgets
                 .startup
                 .set_selected(startup_index(session.data().startup_page));
-            loading.set(false);
             widgets.session_status.set_text("");
+            widgets.site_status.set_text("");
+            if let Ok(settings) = load_player_settings(&settings_path) {
+                widgets.block_ads.set_active(settings.block_ads);
+            }
+            loading.set(false);
             if dirty.get() {
                 return;
             }
@@ -210,6 +230,43 @@ pub fn button(
             match session.set_startup_page(page) {
                 Ok(()) => status.set_text("Вариант запуска сохранён."),
                 Err(err) => status.set_text(&format!("Не удалось сохранить запуск: {err}")),
+            }
+        }
+    ));
+
+    widgets.block_ads.connect_toggled(glib::clone!(
+        #[strong]
+        loading,
+        #[strong]
+        adblock,
+        #[strong]
+        settings_path,
+        #[weak(rename_to = status)]
+        widgets.site_status,
+        move |check| {
+            if loading.get() {
+                return;
+            }
+            let enabled = check.is_active();
+            let saved = load_player_settings(&settings_path).and_then(|settings| {
+                save_player_settings(
+                    &settings_path,
+                    &PlayerSettings {
+                        block_ads: enabled,
+                        ..settings
+                    },
+                )
+            });
+            match saved {
+                Ok(()) => {
+                    adblock.set_enabled(enabled);
+                    status.set_text(if enabled {
+                        "Блокировка рекламы включена. Обновите страницу, если реклама уже загрузилась."
+                    } else {
+                        "Блокировка рекламы выключена."
+                    });
+                }
+                Err(err) => status.set_text(&err),
             }
         }
     ));
@@ -277,11 +334,17 @@ pub fn button(
         dirty,
         move |_| {
             let path = widgets.path.text().trim().to_owned();
-            let settings = PlayerSettings {
-                mpv_path: (!path.is_empty()).then_some(path),
-                mirror_embedded: widgets.mirror.is_active(),
-            };
-            match save_player_settings(&settings_path, &settings) {
+            let saved = load_player_settings(&settings_path).and_then(|settings| {
+                save_player_settings(
+                    &settings_path,
+                    &PlayerSettings {
+                        mpv_path: (!path.is_empty()).then_some(path),
+                        mirror_embedded: widgets.mirror.is_active(),
+                        ..settings
+                    },
+                )
+            });
+            match saved {
                 Ok(()) => {
                     dirty.set(false);
                     widgets.status.set_text("Настройки сохранены.");

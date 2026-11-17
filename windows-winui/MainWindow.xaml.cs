@@ -151,6 +151,8 @@ public sealed partial class MainWindow : Window
         core.NewWindowRequested += OnNewWindowRequested;
         core.WebMessageReceived += OnWebMessage;
 
+        InitAdblock(core);
+
         var startup = _session["startupUrl"]?.GetValue<string>() ?? HomeUrl;
         await core.AddScriptToExecuteOnDocumentCreatedAsync(AnivoxCore.ContentScript(startup));
 

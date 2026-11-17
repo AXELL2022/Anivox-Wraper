@@ -153,6 +153,16 @@
                                 <TextBlock x:Name="SessionStatus" Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap" />
 
                                 <MenuFlyoutSeparator />
+                                <TextBlock Text="Сайт" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                <CheckBox x:Name="BlockAds" Click="OnBlockAdsChanged">
+                                    <TextBlock Text="Блокировать рекламу" TextWrapping="Wrap" />
+                                </CheckBox>
+                                <TextBlock Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           Text="Фильтры RU AdList и EasyList обновляются раз в сутки. Запросы самого сайта не блокируются." />
+                                <TextBlock x:Name="SiteStatus" Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap" />
+
+                                <MenuFlyoutSeparator />
                                 <TextBlock Text="MPV" Style="{StaticResource BodyStrongTextBlockStyle}" />
                                 <TextBlock Text="Путь к исполняемому файлу MPV" />
                                 <Grid ColumnSpacing="6">
