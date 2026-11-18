@@ -98,7 +98,7 @@ jobs:
           $files = Get-ChildItem release-artifacts -Recurse -File | Where-Object { $_.Name -like '*_x64-setup.exe' -or $_.Name -like '*.pkg.tar.zst' }
           if (@($files).Count -ne 2) { throw "Expected the installer and the package, found: $($files.Name -join ', ')" }
           foreach ($file in $files) {
-            npx --yes @tauri-apps/cli@2.11.4 signer sign $file.FullName
+            npx --yes @tauri-apps/cli@2.12.5 signer sign $file.FullName
             if ($LASTEXITCODE) { throw "Signing failed for $($file.Name)" }
           }
 
