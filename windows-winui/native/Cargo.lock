@@ -46,7 +46,7 @@ dependencies = [
 
 [[package]]
 name = "anivox-core"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "adblock",
  "base64",
@@ -63,7 +63,7 @@ dependencies = [
 
 [[package]]
 name = "anivox-ffi"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "anivox-core",
  "reqwest",

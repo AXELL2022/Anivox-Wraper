@@ -1,6 +1,6 @@
 [package]
 name = "anivox-ffi"
-version = "0.5.2"
+version = "0.5.3"
 description = "Anivox core for the WinUI 3 shell: C ABI over anivox-core (site IPC, MPV, Discord, session)"
 edition = "2021"
 publish = false

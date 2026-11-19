@@ -1,6 +1,6 @@
 [package]
 name = "anivox"
-version = "0.5.2"
+version = "0.5.3"
 description = "Anivox Desktop (minimal macOS build)"
 authors = ["yasin"]
 edition = "2021"
