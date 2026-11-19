@@ -51,11 +51,10 @@ impl ksni::Tray for AnivoxTray {
         "Anivox".into()
     }
 
-    fn icon_name(&self) -> String {
-        // Installed by the package; the pixmap below covers `cargo run`.
-        "anivox-gtk".into()
-    }
-
+    // No icon_name: hosts that prefer it (Quickshell and other Qt Quick
+    // shells) draw a "missing" checkerboard when their icon theme lookup
+    // fails, and many never fall back to the pixmap. The bundled pixmap
+    // does not depend on the icon theme or its caches.
     fn icon_pixmap(&self) -> Vec<Icon> {
         self.icons.clone()
     }
@@ -113,9 +112,10 @@ pub fn spawn(tray: AnivoxTray) -> Result<TrayHandle, String> {
     tray.spawn().map_err(|err| err.to_string())
 }
 
-const ICONS: [&[u8]; 2] = [
+const ICONS: [&[u8]; 3] = [
     include_bytes!("../../src-tauri/icons/32x32.png"),
     include_bytes!("../../src-tauri/icons/128x128.png"),
+    include_bytes!("../../src-tauri/icons/128x128@2x.png"),
 ];
 
 fn load_icons() -> Vec<Icon> {
@@ -188,7 +188,7 @@ mod tests {
     #[test]
     fn bundled_icons_decode_to_argb() {
         let icons = load_icons();
-        assert_eq!(icons.len(), 2);
+        assert_eq!(icons.len(), 3);
         for icon in icons {
             assert_eq!(icon.data.len(), (icon.width * icon.height * 4) as usize);
         }
