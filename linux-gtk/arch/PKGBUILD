@@ -22,6 +22,32 @@ replaces=('anivox')
 # ring and other C code in the dependency tree break under makepkg's default -flto.
 options=('!debug' '!lto')
 
+# The package is shipped to other machines, but makepkg.conf on CachyOS (the
+# release runner) sets -march=native / -C target-cpu=native: the binary then
+# needs the runner's CPU (AVX-512 on Zen 4) and dies with SIGILL elsewhere.
+# Force the generic x86-64 baseline for Rust and for C code built by crates.
+_portable_flags() {
+    local f flags=()
+    for f in ${RUSTFLAGS}; do
+        case "$f" in
+            target-cpu=*|-Ctarget-cpu=*|target-feature=*|-Ctarget-feature=*) ;;
+            *) flags+=("$f") ;;
+        esac
+    done
+    # Drop a dangling "-C" left by "-C target-cpu=native".
+    local out=() i
+    for ((i = 0; i < ${#flags[@]}; i++)); do
+        if [[ "${flags[i]}" == "-C" && ( $((i + 1)) -ge ${#flags[@]} || "${flags[i+1]}" == -* ) ]]; then
+            continue
+        fi
+        out+=("${flags[i]}")
+    done
+    export RUSTFLAGS="${out[*]} -C target-cpu=x86-64 --remap-path-prefix=${srcdir}=/usr/src/anivox-gtk"
+    CFLAGS="$(sed -E 's/-march=[^ ]+/-march=x86-64/g; s/-mtune=[^ ]+/-mtune=generic/g' <<<"${CFLAGS}")"
+    CXXFLAGS="$(sed -E 's/-march=[^ ]+/-march=x86-64/g; s/-mtune=[^ ]+/-mtune=generic/g' <<<"${CXXFLAGS}")"
+    export CFLAGS CXXFLAGS
+}
+
 _root() {
     # linux-gtk/arch -> repository root
     echo "${startdir}/../.."
@@ -43,7 +69,7 @@ build() {
     cd "${srcdir}/tree/linux-gtk"
     export CARGO_TARGET_DIR="${srcdir}/target"
     export RUSTUP_TOOLCHAIN=stable
-    export RUSTFLAGS="${RUSTFLAGS} --remap-path-prefix=${srcdir}=/usr/src/anivox-gtk"
+    _portable_flags
     cargo build --release --locked
 }
 
@@ -51,7 +77,7 @@ check() {
     cd "${srcdir}/tree/linux-gtk"
     export CARGO_TARGET_DIR="${srcdir}/target"
     export RUSTUP_TOOLCHAIN=stable
-    export RUSTFLAGS="${RUSTFLAGS} --remap-path-prefix=${srcdir}=/usr/src/anivox-gtk"
+    _portable_flags
     cargo test --release --locked
 }
 
