@@ -10,7 +10,7 @@ Anivox is a desktop wrapper for `https://anivox.fun/` with three builds on one R
 - **Linux:** `linux-gtk/` (GTK4 + WebKitGTK 6.0).
 - **macOS:** the minimal Tauri v2 app in `src-tauri/` (`macos.rs`).
 
-The WinUI and GTK builds are still being tested; the next release ships them. The former Tauri build for Windows/Linux (toolbar webviews, `ui/` panels, `lib.rs` and its modules, capabilities, Arch `PKGBUILD`, Windows integration scripts) was retired: it lives in the git-ignored `backup_tauri/` folder of the main checkout and in git history (the last commit with it is in `backup_tauri/SOURCE_COMMIT`). Do not restore it into the tree unless asked.
+The WinUI and GTK builds are still being tested; the next release ships them. The former Tauri build for Windows/Linux (toolbar webviews, `ui/` panels, `lib.rs` and its modules, capabilities, Arch `PKGBUILD`, Windows integration scripts) was retired: it lives only in git history (the last commit with it is `8bf0c21`). Do not restore it into the tree unless asked.
 
 Features: navigation controls, Discord Rich Presence with the Shikimori rating, external MPV playback with resume history, a Shikimori overlay, update checks with release notes, a connection check panel, session restore and a site recovery screen. macOS has only the site, menus, Discord and the Tauri updater.
 

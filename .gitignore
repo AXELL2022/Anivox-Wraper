@@ -4,14 +4,8 @@ node_modules/
 *.pkg.tar.zst
 pkg/
 /tmp
-backup_linux/
-backup_tauri/
 windows-winui/installer/out/
 *.log
-.superpowers/
-/superpowers/
-/superpowers-local/
-/.agents/
 /.claude/settings.local.json
 /actions-runner/
 release-artifacts/
