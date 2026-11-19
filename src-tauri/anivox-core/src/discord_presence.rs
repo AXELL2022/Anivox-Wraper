@@ -96,8 +96,7 @@ pub fn update_discord_presence(
     send_discord_activity(
         client,
         || {
-            let mut client =
-                DiscordIpcClient::new("1504862803335315609").map_err(|e| e.to_string())?;
+            let mut client = DiscordIpcClient::new("1504862803335315609");
             client.connect().map_err(|e| e.to_string())?;
             Ok(client)
         },
